@@ -1,91 +1,98 @@
 #!/usr/bin/env python3
+"""
+Live plotter for Arduino Mega2560 + MAX6675 + Valve control.
+
+– Reads CSV lines “time_s,temp_C,valve” @ 115200 baud
+– Plots temperature vs. time (0–50 °C, dynamic time window)
+– Overlays valve state (0/1) on a second y-axis
+– Draws a red dashed set-point at 25 °C
+"""
+
 import time
 from collections import deque
 import serial
 import matplotlib
+matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-matplotlib.use('TkAgg')
 
-# —————— Serial setup ——————
-try:
-    ser = serial.Serial('/dev/ttyACM0', 115200, timeout=0.1)
-except serial.SerialException as e:
-    print("ERROR opening /dev/ttyACM0:", e)
-    exit(1)
+# === Serial port setup ===
+PORT = '/dev/ttyACM0'
+BAUD = 115200
 
-time.sleep(2)
+ser = serial.Serial(PORT, BAUD, timeout=0.1)
+time.sleep(2)            # allow Arduino to reset
 ser.reset_input_buffer()
 
-# —————— Data buffers ——————
-# 600 points max → 10 min at 1 Hz
-times = deque(maxlen=600)
-temps = deque(maxlen=600)
+# === Data buffers (10 min max at 1 Hz) ===
+times  = deque(maxlen=600)
+temps  = deque(maxlen=600)
+valves = deque(maxlen=600)
 
-start_time = time.time()
+# === Plot setup ===
+fig, ax1 = plt.subplots()
+ax2 = ax1.twinx()
 
-# —————— Plot setup ——————
-fig, ax = plt.subplots()
-line, = ax.plot([], [], label='Temp (°C)', lw=2)
-hline = ax.axhline(25.0, linestyle='--', label='Set-point (25 °C)')
+line_temp,  = ax1.plot([], [], 'b-', label='Temp (°C)', lw=2)
+line_valve, = ax2.step([], [], 'g-', label='Valve (0/1)', where='post')
+hline = ax1.axhline(25.0, color='red', linestyle='--', label='Set-point (25 °C)')
 
-ax.set_xlabel('Time (s)')
-ax.set_ylabel('Temperature (°C)')
-ax.legend(loc='upper left')
+ax1.set_xlabel('Time (s)')
+ax1.set_ylabel('Temperature (°C)')
+ax2.set_ylabel('Valve State')
 
-# Optionally fix to 0–600s view, or enable autoscale:
-ax.set_xlim(0, 600)
-ax.set_ylim(0, 50)
+ax1.set_ylim(0, 50)
+ax2.set_ylim(-0.1, 1.1)
 
-# —————— Animation callbacks ——————
+ax1.legend(loc='upper left')
+ax2.legend(loc='upper right')
+
 def init():
-    line.set_data([], [])
-    return line, hline
+    line_temp.set_data([], [])
+    line_valve.set_data([], [])
+    return line_temp, line_valve, hline
 
 def update(frame):
     latest = None
-    # drain all available lines; keep only the last
-    while True:
+    # Drain buffer, keep only the last line
+    while ser.in_waiting:
         raw = ser.readline().decode('utf-8', errors='ignore').strip()
-        if not raw:
-            break
-        latest = raw
+        if raw:
+            latest = raw
 
-    if not latest or ',' not in latest:
-        return line, hline
+    if not latest:
+        return line_temp, line_valve, hline
 
     parts = latest.split(',')
-    if len(parts) < 2:
-        return line, hline
+    if len(parts) != 3:
+        return line_temp, line_valve, hline
 
     try:
-        t_s   = float(parts[0])  # Arduino millis()/1000
-        temp  = float(parts[1])
-        # valve = int(parts[2])  # if you ever want to use it
+        t    = float(parts[0])
+        temp = float(parts[1])
+        valve_state = int(parts[2])
     except ValueError:
-        return line, hline
+        return line_temp, line_valve, hline
 
-    # Record the very first Arduino timestamp and shift
-    if not hasattr(update, 't0'):
-        update.t0 = t_s
-    times.append(t_s - update.t0)
+    # Append to buffers
+    times.append(t)
     temps.append(temp)
+    valves.append(valve_state)
 
-    # update plot data
-    line.set_data(times, temps)
+    # Update line data
+    line_temp.set_data(times, temps)
+    line_valve.set_data(times, valves)
 
-    # (optional) scrolling X—uncomment if you prefer dynamic window:
-    # ax.set_xlim(max(0, times[-1] - 600), times[-1] + 1)
+    # Auto‐scale X axis to show all collected data
+    ax1.set_xlim(min(times, default=0), max(times, default=0))
 
-    return line, hline
+    return line_temp, line_valve, hline
 
-# —————— Run it at 1 Hz with blitting ——————
+# === Run animation at 1 Hz ===
 ani = FuncAnimation(
-    fig, update,
-    init_func=init,
-    interval=1000,         # 1 s
-    blit=True,
-    cache_frame_data=False
+    fig, update, init_func=init,
+    interval=1000, blit=True, cache_frame_data=False
 )
 
 plt.show()
+ser.close()
