@@ -1,20 +1,27 @@
 #include <Arduino.h>
 #include <max6675.h>
 
-// Thermocouple pins on Mega2560
-const int CLK_PIN    = 52;
-const int CS_PIN     = 53;
-const int DO_PIN     = 50;
+// SPI pins on Mega2560
+const int CLK_PIN = 52;
+const int DO_PIN  = 50;
 
-// Valve control pin (e.g. driving a MOSFET or relay)
-const int VALVE_PIN  = 7;
+// Chip Select (CS) pins for each thermocouple
+const int CS_PINS[4] = {53, 51, 49, 48};  // Assign unique CS pins
+
+// Valve control pin
+const int VALVE_PIN = 7;
 
 // Control parameters
 const float SETPOINT   = 25.0;  // °C
 const float HYSTERESIS = 0.5;   // °C
 
-// MAX6675 instance: arguments are (SCLK, CS, MISO)
-MAX6675 tc(CLK_PIN, CS_PIN, DO_PIN);
+// Create MAX6675 instances for 4 sensors
+MAX6675 tc[4] = {
+  MAX6675(CLK_PIN, CS_PINS[0], DO_PIN),
+  MAX6675(CLK_PIN, CS_PINS[1], DO_PIN),
+  MAX6675(CLK_PIN, CS_PINS[2], DO_PIN),
+  MAX6675(CLK_PIN, CS_PINS[3], DO_PIN)
+};
 
 unsigned long lastSample = 0;
 enum ValveState { CLOSED = 0, OPEN = 1 };
@@ -25,33 +32,50 @@ void setup() {
   pinMode(VALVE_PIN, OUTPUT);
   digitalWrite(VALVE_PIN, LOW);
 
-  // CSV header for PC-side parser/plotter
-  Serial.println("time_s,temp_C,valve");
+  // Set all CS pins as output
+  for (int i = 0; i < 4; i++) {
+    pinMode(CS_PINS[i], OUTPUT);
+    digitalWrite(CS_PINS[i], HIGH);  // Deselect all sensors
+  }
+
+  // CSV header
+  Serial.println("time_s,temp1_C,temp2_C,temp3_C,temp4_C,valve");
 }
 
 void loop() {
   unsigned long now = millis();
-  if (now - lastSample < 1000) return;  // 1 Hz sampling
+  if (now - lastSample < 1000) return;  // 1 Hz
   lastSample = now;
 
-  // --- 1) Read temperature
-  float temp = tc.readCelsius();
+  // --- 1) Read temperatures
+  float temps[4];
+  for (int i = 0; i < 4; i++) {
+    temps[i] = tc[i].readCelsius();
+  }
 
-  // --- 2) Simple hysteresis control
-  if (valve == CLOSED && temp > SETPOINT + HYSTERESIS) {
+  // --- 2) Hysteresis control based on average temperature
+  float avgTemp = 0;
+  for (int i = 0; i < 4; i++) {
+    avgTemp += temps[i];
+  }
+  avgTemp /= 4.0;
+
+  if (valve == CLOSED && avgTemp > SETPOINT + HYSTERESIS) {
     valve = OPEN;
     digitalWrite(VALVE_PIN, HIGH);
   }
-  else if (valve == OPEN && temp < SETPOINT - HYSTERESIS) {
+  else if (valve == OPEN && avgTemp < SETPOINT - HYSTERESIS) {
     valve = CLOSED;
     digitalWrite(VALVE_PIN, LOW);
   }
 
-  // --- 3) Stream data as CSV: time [s], temp [°C], valve (0/1)
+  // --- 3) Print CSV: time, 4 temps, valve
   float t_s = now / 1000.0;
   Serial.print(t_s, 3);
-  Serial.print(',');
-  Serial.print(temp, 2);
+  for (int i = 0; i < 4; i++) {
+    Serial.print(',');
+    Serial.print(temps[i], 2);
+  }
   Serial.print(',');
   Serial.println(valve);
 }
