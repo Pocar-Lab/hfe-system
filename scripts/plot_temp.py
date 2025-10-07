@@ -1,136 +1,175 @@
 #!/usr/bin/env python3
 """
-Live plotter for Arduino Mega2560 + 2x MAX31856 + Valve.
+Live plotter for Mega2560 + 9× MAX31856 + valve override UI.
 
-Reads CSV from serial (printed by Arduino sketch):
-  time_s,temp1_C,temp2_C,valve
-
-Features:
-  - Plots Temp1, Temp2, and their AVERAGE
-  - Overlays valve state (0/1) on a second y-axis
-  - Shows a horizontal set-point line
-Usage:
-  python live_plot.py /dev/ttyACM0
+Arduino CSV (1 Hz):
+  time_s, temp0_C, ... temp8_C, valve, mode
+where valve ∈ {0,1}, mode ∈ {'A','O','C'} for AUTO / OPEN / CLOSE.
 """
 
-import sys
-import time
+import time, math
 from collections import deque
-
 import serial
+import tkinter as tk
+from tkinter import ttk
+
 import matplotlib
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.animation import FuncAnimation
 
-# === Config ===
-PORT = sys.argv[1] if len(sys.argv) > 1 else '/dev/ttyACM0'
+# ======= Config =======
+PORT = '/dev/ttyACM0'   # <-- change if needed (e.g., 'COM5' on Windows)
 BAUD = 115200
-SETPOINT_C = 23.0
-MAXLEN = 600  # ~10 min at 1 Hz
+NUM_SENSORS = 9
+SETPOINT = 25.0
+WINDOW_LEN = 600  # 10 minutes @ 1 Hz
 
-# === Serial ===
+# ======= Serial =======
 ser = serial.Serial(PORT, BAUD, timeout=0.1)
-time.sleep(2)            # let Arduino reset
+time.sleep(2)              # allow Arduino to reset
 ser.reset_input_buffer()
 
-# === Buffers ===
-times = deque(maxlen=MAXLEN)
-t1buf = deque(maxlen=MAXLEN)
-t2buf = deque(maxlen=MAXLEN)
-tavg  = deque(maxlen=MAXLEN)
-vbuf  = deque(maxlen=MAXLEN)
+# ======= Data buffers =======
+times   = deque(maxlen=WINDOW_LEN)
+temps   = [deque(maxlen=WINDOW_LEN) for _ in range(NUM_SENSORS)]
 
-# === Plot ===
-fig, ax1 = plt.subplots()
-ax2 = ax1.twinx()
+# ======= Tk window =======
+root = tk.Tk()
+root.title("TC Monitor (9x MAX31856) + Valve Control")
 
-line_t1,   = ax1.plot([], [], lw=2, label='Temp1 (°C)')
-line_t2,   = ax1.plot([], [], lw=2, label='Temp2 (°C)')
-line_tavg, = ax1.plot([], [], lw=2, linestyle='--', label='Average (°C)')
-line_valve, = ax2.step([], [], where='post', label='Valve (0/1)')
+# Left: plot
+fig, ax = plt.subplots()
+lines = []
+for i in range(NUM_SENSORS):
+    (line_i,) = ax.plot([], [], '-', lw=2, label=f'TC{i}')
+    lines.append(line_i)
 
-hline = ax1.axhline(SETPOINT_C, linestyle='--', label=f'Set-point ({SETPOINT_C:g} °C)')
+hline = ax.axhline(SETPOINT, linestyle='--', label=f'Set-point ({SETPOINT} °C)')
 
-ax1.set_xlabel('Time (s)')
-ax1.set_ylabel('Temperature (°C)')
-ax2.set_ylabel('Valve State')
+ax.set_xlabel('Time (s)')
+ax.set_ylabel('Temperature (°C)')
+ax.set_ylim(0, 50)
+ax.legend(loc='upper left')
 
-ax1.set_ylim(min(-200.0, SETPOINT_C - 5), max(25.0, SETPOINT_C + 5))
-ax2.set_ylim(-0.1, 1.1)
+canvas = FigureCanvasTkAgg(fig, master=root)
+canvas_widget = canvas.get_tk_widget()
+canvas_widget.grid(row=0, column=0, sticky="nsew")
 
-ax1.legend(loc='upper left')
-ax2.legend(loc='upper right')
+# Right: controls
+side = ttk.Frame(root, padding=12)
+side.grid(row=0, column=1, sticky="ns")
+root.columnconfigure(0, weight=1)
+root.rowconfigure(0, weight=1)
 
-def _parse_row(raw: str):
-    parts = raw.strip().split(',')
-    if len(parts) != 4:
+ttk.Label(side, text="Valve State", font=("TkDefaultFont", 12, "bold")).grid(row=0, column=0, pady=(0,4), sticky="w")
+state_var = tk.StringVar(value="—")
+state_lbl = tk.Label(side, textvariable=state_var, width=12, relief="groove",
+                     font=("TkDefaultFont", 18, "bold"))
+state_lbl.grid(row=1, column=0, pady=(0,12), sticky="we")
+
+mode_var = tk.StringVar(value="Mode: AUTO")
+ttk.Label(side, textvariable=mode_var).grid(row=2, column=0, pady=(0,12), sticky="w")
+
+avg_var = tk.StringVar(value="Avg (valid): —")
+ttk.Label(side, textvariable=avg_var).grid(row=3, column=0, pady=(0,12), sticky="w")
+
+btn_frame = ttk.LabelFrame(side, text="Override")
+btn_frame.grid(row=4, column=0, sticky="we", padx=0, pady=(0,12))
+btn_frame.columnconfigure(0, weight=1)
+
+def send_cmd(cmd: str):
+    try:
+        ser.write((cmd + "\n").encode("ascii"))
+    except Exception:
+        pass
+
+ttk.Button(btn_frame, text="OPEN",  command=lambda: send_cmd("VALVE OPEN")).grid(row=0, column=0, sticky="we", pady=2)
+ttk.Button(btn_frame, text="CLOSE", command=lambda: send_cmd("VALVE CLOSE")).grid(row=1, column=0, sticky="we", pady=2)
+ttk.Button(btn_frame, text="AUTO",  command=lambda: send_cmd("VALVE AUTO")).grid(row=2, column=0, sticky="we", pady=2)
+
+# ======= Animation / update =======
+def init():
+    for ln in lines:
+        ln.set_data([], [])
+    return (*lines, hline)
+
+def parse_line(raw: str):
+    """Return tuple (t, temps[9], valve:int, mode_char) or None if malformed."""
+    parts = raw.split(',')
+    expected = 1 + NUM_SENSORS + 2  # time + N temps + valve + mode
+    if len(parts) != expected:
         return None
     try:
         t = float(parts[0])
-        t1 = float(parts[1])
-        t2 = float(parts[2])
-        v  = int(parts[3])
+        vals = []
+        for i in range(NUM_SENSORS):
+            s = parts[1 + i].strip().lower()
+            vals.append(float('nan') if s == 'nan' or s == '' else float(s))
+        valve = int(parts[1 + NUM_SENSORS])
+        mode_char = parts[2 + NUM_SENSORS].strip()[:1]
+        return t, vals, valve, mode_char
     except ValueError:
         return None
-    return t, t1, t2, v
-
-def init():
-    line_t1.set_data([], [])
-    line_t2.set_data([], [])
-    line_tavg.set_data([], [])
-    line_valve.set_data([], [])
-    return line_t1, line_t2, line_tavg, line_valve, hline
 
 def update(_frame):
     latest = None
-    # Drain all currently waiting lines, keep last good row
+    # Drain serial buffer, keep only the last complete CSV line
     while ser.in_waiting:
         raw = ser.readline().decode('utf-8', errors='ignore').strip()
         if not raw:
             continue
-        if raw.lower().startswith('time'):
+        # skip header lines or comments Arduino might print (e.g., "#F0=0x..")
+        if raw.startswith("time_s") or raw.startswith("#"):
             continue
-        parsed = _parse_row(raw)
+        parsed = parse_line(raw)
         if parsed:
             latest = parsed
 
     if latest is None:
-        return line_t1, line_t2, line_tavg, line_valve, hline
+        return (*lines, hline)
 
-    t, t1, t2, v = latest
+    t, vals, valve, mode_char = latest
+
+    # append data
     times.append(t)
-    t1buf.append(t1)
-    t2buf.append(t2)
+    for i, v in enumerate(vals):
+        temps[i].append(v)
 
-    # Average (handle NaNs printed as 'nan')
-    a_ok = (t1 == t1)
-    b_ok = (t2 == t2)
-    if a_ok and b_ok:
-        tavg.append(0.5 * (t1 + t2))
-    elif a_ok:
-        tavg.append(t1)
-    elif b_ok:
-        tavg.append(t2)
-    else:
-        tavg.append(float('nan'))
+    # update plot lines
+    for i, ln in enumerate(lines):
+        ln.set_data(times, temps[i])
 
-    vbuf.append(v)
-
-    # Update lines
-    line_t1.set_data(times, t1buf)
-    line_t2.set_data(times, t2buf)
-    line_tavg.set_data(times, tavg)
-    line_valve.set_data(times, vbuf)
-
+    # x-limits
     if times:
-        ax1.set_xlim(times[0], times[-1])
+        ax.set_xlim(times[0], times[-1])
 
-    return line_t1, line_t2, line_tavg, line_valve, hline
+    # compute average of valid sensors for display
+    valid = [v for v in vals if isinstance(v, float) and math.isfinite(v)]
+    if valid:
+        avg = sum(valid) / len(valid)
+        avg_var.set(f"Avg (valid {len(valid)}): {avg:.2f} °C")
+    else:
+        avg_var.set("Avg (valid 0): —")
 
-ani = FuncAnimation(fig, update, init_func=init, interval=1000, blit=True, cache_frame_data=False)
+    # update side labels
+    state_var.set("OPEN" if valve else "CLOSED")
+    state_lbl.configure(bg=("green" if valve else "light gray"))
+    mode_text = {"A": "AUTO", "O": "FORCED OPEN", "C": "FORCED CLOSE"}.get(mode_char.upper(), "AUTO")
+    mode_var.set(f"Mode: {mode_text}")
 
-try:
-    plt.show()
-finally:
-    ser.close()
+    canvas.draw_idle()
+    return (*lines, hline)
+
+ani = FuncAnimation(fig, update, init_func=init, interval=1000, blit=False, cache_frame_data=False)
+
+def on_close():
+    try:
+        ser.close()
+    except Exception:
+        pass
+    root.destroy()
+
+root.protocol("WM_DELETE_WINDOW", on_close)
+root.mainloop()
