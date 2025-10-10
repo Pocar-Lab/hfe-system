@@ -1,0 +1,12 @@
+serial:
+  port: "/dev/ttyACM0"      # adjust on macOS/Windows if needed
+  baudrate: 115200
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  auth_token: ""            # leave empty; we’ll use env var instead
+
+logging:
+  parquet_dir: "/home/pocar-lab/Documents/HFE_System/data"
+  batch_size: 200
