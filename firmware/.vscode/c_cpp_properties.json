@@ -1,0 +1,60 @@
+//
+// !!! WARNING !!! AUTO-GENERATED FILE!
+// PLEASE DO NOT MODIFY IT AND USE "platformio.ini":
+// https://docs.platformio.org/page/projectconf/section_env_build.html#build-flags
+//
+{
+    "configurations": [
+        {
+            "name": "PlatformIO",
+            "includePath": [
+                "/home/pocar-lab/Documents/HFE_System/firmware/include",
+                "/home/pocar-lab/Documents/HFE_System/firmware/src",
+                "/home/pocar-lab/Documents/HFE_System/firmware/.pio/libdeps/megaatmega2560/Adafruit MAX31856 library",
+                "/home/pocar-lab/Documents/HFE_System/firmware/.pio/libdeps/megaatmega2560/Adafruit BusIO",
+                "/home/pocar-lab/.platformio/packages/framework-arduino-avr/libraries/SPI/src",
+                "/home/pocar-lab/.platformio/packages/framework-arduino-avr/libraries/Wire/src",
+                "/home/pocar-lab/.platformio/packages/framework-arduino-avr/cores/arduino",
+                "/home/pocar-lab/.platformio/packages/framework-arduino-avr/variants/mega",
+                "/home/pocar-lab/.platformio/packages/framework-arduino-avr/libraries/EEPROM/src",
+                "/home/pocar-lab/.platformio/packages/framework-arduino-avr/libraries/HID/src",
+                "/home/pocar-lab/.platformio/packages/framework-arduino-avr/libraries/SoftwareSerial/src",
+                ""
+            ],
+            "browse": {
+                "limitSymbolsToIncludedHeaders": true,
+                "path": [
+                    "/home/pocar-lab/Documents/HFE_System/firmware/include",
+                    "/home/pocar-lab/Documents/HFE_System/firmware/src",
+                    "/home/pocar-lab/Documents/HFE_System/firmware/.pio/libdeps/megaatmega2560/Adafruit MAX31856 library",
+                    "/home/pocar-lab/Documents/HFE_System/firmware/.pio/libdeps/megaatmega2560/Adafruit BusIO",
+                    "/home/pocar-lab/.platformio/packages/framework-arduino-avr/libraries/SPI/src",
+                    "/home/pocar-lab/.platformio/packages/framework-arduino-avr/libraries/Wire/src",
+                    "/home/pocar-lab/.platformio/packages/framework-arduino-avr/cores/arduino",
+                    "/home/pocar-lab/.platformio/packages/framework-arduino-avr/variants/mega",
+                    "/home/pocar-lab/.platformio/packages/framework-arduino-avr/libraries/EEPROM/src",
+                    "/home/pocar-lab/.platformio/packages/framework-arduino-avr/libraries/HID/src",
+                    "/home/pocar-lab/.platformio/packages/framework-arduino-avr/libraries/SoftwareSerial/src",
+                    ""
+                ]
+            },
+            "defines": [
+                "PLATFORMIO=60118",
+                "ARDUINO_AVR_MEGA2560",
+                "F_CPU=16000000L",
+                "ARDUINO_ARCH_AVR",
+                "ARDUINO=10808",
+                "__AVR_ATmega2560__",
+                ""
+            ],
+            "cStandard": "gnu11",
+            "cppStandard": "gnu++11",
+            "compilerPath": "/home/pocar-lab/.platformio/packages/toolchain-atmelavr/bin/avr-gcc",
+            "compilerArgs": [
+                "-mmcu=atmega2560",
+                ""
+            ]
+        }
+    ],
+    "version": 4
+}
