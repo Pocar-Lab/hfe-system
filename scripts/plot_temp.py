@@ -1,175 +1,394 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-Live plotter for Mega2560 + 9× MAX31856 + valve override UI.
+TC monitor + valve UI for Mega2560 + up to 10× MAX31856, with CSV logging.
 
-Arduino CSV (1 Hz):
-  time_s, temp0_C, ... temp8_C, valve, mode
-where valve ∈ {0,1}, mode ∈ {'A','O','C'} for AUTO / OPEN / CLOSE.
+CSV stream from Arduino (1 Hz):
+  time_s, temp0_C, ... temp9_C, valve, mode
 """
 
-import time, math
+from __future__ import annotations
+
+import csv
+import math
+import time
+from datetime import datetime
+from pathlib import Path
 from collections import deque
-import serial
+from typing import Deque, List, Optional, Tuple, TextIO
+
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog
+
+import serial
+from serial import SerialException
 
 import matplotlib
-matplotlib.use('TkAgg')
+matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.animation import FuncAnimation
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-# ======= Config =======
-PORT = '/dev/ttyACM0'   # <-- change if needed (e.g., 'COM5' on Windows)
-BAUD = 115200
-NUM_SENSORS = 9
-SETPOINT = 25.0
-WINDOW_LEN = 600  # 10 minutes @ 1 Hz
+# ── Config ────────────────────────────────────────────────────────────────
+PORT: str = "/dev/ttyACM0"   # change if needed (e.g. 'COM5' on Windows)
+BAUD: int = 115200
 
-# ======= Serial =======
-ser = serial.Serial(PORT, BAUD, timeout=0.1)
-time.sleep(2)              # allow Arduino to reset
-ser.reset_input_buffer()
+MAX_SENSORS: int = 10          # U0..U9
+SETPOINT_C: float = 25.0
 
-# ======= Data buffers =======
-times   = deque(maxlen=WINDOW_LEN)
-temps   = [deque(maxlen=WINDOW_LEN) for _ in range(NUM_SENSORS)]
+X_MAX_MIN: float = 15.0        # fixed 0..15 minutes
+WINDOW_LEN_S: int = int(X_MAX_MIN * 60.0)  # 900 samples @ 1 Hz
+ANIM_INTERVAL_MS: int = 1000
 
-# ======= Tk window =======
-root = tk.Tk()
-root.title("TC Monitor (9x MAX31856) + Valve Control")
+DETECT_ZERO_AS_NC: bool = True
+VALID_RANGE_C: Tuple[float, float] = (-200.0, 1800.0)
 
-# Left: plot
-fig, ax = plt.subplots()
-lines = []
-for i in range(NUM_SENSORS):
-    (line_i,) = ax.plot([], [], '-', lw=2, label=f'TC{i}')
-    lines.append(line_i)
 
-hline = ax.axhline(SETPOINT, linestyle='--', label=f'Set-point ({SETPOINT} °C)')
+class TCMonitorApp:
+    """GUI + serial + plotting + CSV logging."""
 
-ax.set_xlabel('Time (s)')
-ax.set_ylabel('Temperature (°C)')
-ax.set_ylim(0, 50)
-ax.legend(loc='upper left')
+    def __init__(self, port: str = PORT, baud: int = BAUD) -> None:
+        # Serial
+        try:
+            self.serial = serial.Serial(port, baud, timeout=0.1)
+        except SerialException as exc:
+            raise SystemExit(f"Failed to open serial port {port}: {exc}") from exc
+        time.sleep(2.0)
+        self.serial.reset_input_buffer()
 
-canvas = FigureCanvasTkAgg(fig, master=root)
-canvas_widget = canvas.get_tk_widget()
-canvas_widget.grid(row=0, column=0, sticky="nsew")
+        # Data buffers
+        self.times: Deque[float] = deque(maxlen=WINDOW_LEN_S)  # minutes
+        self.temps: List[Deque[float]] = [deque(maxlen=WINDOW_LEN_S) for _ in range(MAX_SENSORS)]
+        self.start_time: Optional[float] = None
+        self.running: bool = True
 
-# Right: controls
-side = ttk.Frame(root, padding=12)
-side.grid(row=0, column=1, sticky="ns")
-root.columnconfigure(0, weight=1)
-root.rowconfigure(0, weight=1)
+        # Sensor count (detected from header/line length)
+        self.nsensors: int = MAX_SENSORS
+        self.legend_nsensors: int = -1
 
-ttk.Label(side, text="Valve State", font=("TkDefaultFont", 12, "bold")).grid(row=0, column=0, pady=(0,4), sticky="w")
-state_var = tk.StringVar(value="—")
-state_lbl = tk.Label(side, textvariable=state_var, width=12, relief="groove",
-                     font=("TkDefaultFont", 18, "bold"))
-state_lbl.grid(row=1, column=0, pady=(0,12), sticky="we")
+        # Logging
+        self.log_enabled: bool = False
+        self.log_path: Optional[Path] = None
+        self.log_fh: Optional[TextIO] = None
+        self.log_writer: Optional[csv.writer] = None
 
-mode_var = tk.StringVar(value="Mode: AUTO")
-ttk.Label(side, textvariable=mode_var).grid(row=2, column=0, pady=(0,12), sticky="w")
+        # GUI
+        self.root = tk.Tk()
+        self.root.title("TC Monitor (MAX31856) + Valve Control")
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
 
-avg_var = tk.StringVar(value="Avg (valid): —")
-ttk.Label(side, textvariable=avg_var).grid(row=3, column=0, pady=(0,12), sticky="w")
+        self.figure, self.axes = plt.subplots()
+        self.lines: List = []
+        for i in range(MAX_SENSORS):
+            (line_obj,) = self.axes.plot([], [], "-", lw=2, label=f"U{i}")
+            line_obj.set_alpha(0.25)
+            self.lines.append(line_obj)
 
-btn_frame = ttk.LabelFrame(side, text="Override")
-btn_frame.grid(row=4, column=0, sticky="we", padx=0, pady=(0,12))
-btn_frame.columnconfigure(0, weight=1)
+        self.hline = self.axes.axhline(SETPOINT_C, linestyle="--", label=f"Set-point ({SETPOINT_C} °C)")
+        self.axes.set_xlabel("Time (min)")
+        self.axes.set_ylabel("Temperature (°C)")
+        self.axes.set_ylim(0, 50)
+        self.axes.set_xlim(0, X_MAX_MIN)
+        self._rebuild_legend(0)
 
-def send_cmd(cmd: str):
-    try:
-        ser.write((cmd + "\n").encode("ascii"))
-    except Exception:
-        pass
+        self.canvas = FigureCanvasTkAgg(self.figure, master=self.root)
+        self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
 
-ttk.Button(btn_frame, text="OPEN",  command=lambda: send_cmd("VALVE OPEN")).grid(row=0, column=0, sticky="we", pady=2)
-ttk.Button(btn_frame, text="CLOSE", command=lambda: send_cmd("VALVE CLOSE")).grid(row=1, column=0, sticky="we", pady=2)
-ttk.Button(btn_frame, text="AUTO",  command=lambda: send_cmd("VALVE AUTO")).grid(row=2, column=0, sticky="we", pady=2)
+        # Side panel
+        side = ttk.Frame(self.root, padding=12)
+        side.grid(row=0, column=1, sticky="ns")
 
-# ======= Animation / update =======
-def init():
-    for ln in lines:
-        ln.set_data([], [])
-    return (*lines, hline)
+        ttk.Label(side, text="Valve State", font=("TkDefaultFont", 12, "bold")).grid(row=0, column=0, pady=(0, 4), sticky="w")
+        self.state_var = tk.StringVar(value="—")
+        self.state_lbl = tk.Label(side, textvariable=self.state_var, width=12, relief="groove", font=("TkDefaultFont", 18, "bold"))
+        self.state_lbl.grid(row=1, column=0, pady=(0, 12), sticky="we")
 
-def parse_line(raw: str):
-    """Return tuple (t, temps[9], valve:int, mode_char) or None if malformed."""
-    parts = raw.split(',')
-    expected = 1 + NUM_SENSORS + 2  # time + N temps + valve + mode
-    if len(parts) != expected:
-        return None
-    try:
-        t = float(parts[0])
-        vals = []
-        for i in range(NUM_SENSORS):
-            s = parts[1 + i].strip().lower()
-            vals.append(float('nan') if s == 'nan' or s == '' else float(s))
-        valve = int(parts[1 + NUM_SENSORS])
-        mode_char = parts[2 + NUM_SENSORS].strip()[:1]
-        return t, vals, valve, mode_char
-    except ValueError:
-        return None
+        self.mode_var = tk.StringVar(value="Mode: —")
+        ttk.Label(side, textvariable=self.mode_var).grid(row=2, column=0, pady=(0, 8), sticky="w")
 
-def update(_frame):
-    latest = None
-    # Drain serial buffer, keep only the last complete CSV line
-    while ser.in_waiting:
-        raw = ser.readline().decode('utf-8', errors='ignore').strip()
-        if not raw:
-            continue
-        # skip header lines or comments Arduino might print (e.g., "#F0=0x..")
-        if raw.startswith("time_s") or raw.startswith("#"):
-            continue
-        parsed = parse_line(raw)
-        if parsed:
-            latest = parsed
+        self.avg_var = tk.StringVar(value="Avg (valid): —")
+        ttk.Label(side, textvariable=self.avg_var).grid(row=3, column=0, pady=(0, 4), sticky="w")
 
-    if latest is None:
-        return (*lines, hline)
+        self.count_var = tk.StringVar(value="Sensors: —")
+        ttk.Label(side, textvariable=self.count_var).grid(row=4, column=0, pady=(0, 12), sticky="w")
 
-    t, vals, valve, mode_char = latest
+        btn_frame = ttk.LabelFrame(side, text="Override")
+        btn_frame.grid(row=5, column=0, sticky="we", pady=(0, 12))
+        btn_frame.columnconfigure(0, weight=1)
+        ttk.Button(btn_frame, text="OPEN",  command=lambda: self.send_cmd("VALVE OPEN")).grid(row=0, column=0, sticky="we", pady=2)
+        ttk.Button(btn_frame, text="CLOSE", command=lambda: self.send_cmd("VALVE CLOSE")).grid(row=1, column=0, sticky="we", pady=2)
+        ttk.Button(btn_frame, text="AUTO",  command=lambda: self.send_cmd("VALVE AUTO")).grid(row=2, column=0, sticky="we", pady=2)
 
-    # append data
-    times.append(t)
-    for i, v in enumerate(vals):
-        temps[i].append(v)
+        # Logging controls
+        self.log_var = tk.StringVar(value="Logging: off")
+        ttk.Label(side, textvariable=self.log_var).grid(row=6, column=0, sticky="w", pady=(0, 6))
+        self.log_btn = ttk.Button(side, text="Start Logging", command=self.start_logging)
+        self.log_btn.grid(row=7, column=0, sticky="we", pady=(0, 8))
 
-    # update plot lines
-    for i, ln in enumerate(lines):
-        ln.set_data(times, temps[i])
+        ttk.Button(side, text="Reset Plot", command=self.reset_plot).grid(row=8, column=0, sticky="we", pady=(0, 8))
+        ttk.Button(side, text="Quit", command=self.on_close).grid(row=9, column=0, sticky="we")
 
-    # x-limits
-    if times:
-        ax.set_xlim(times[0], times[-1])
+        self.anim = FuncAnimation(self.figure, self.update, init_func=self.init_anim,
+                                  interval=ANIM_INTERVAL_MS, blit=False, cache_frame_data=False)
 
-    # compute average of valid sensors for display
-    valid = [v for v in vals if isinstance(v, float) and math.isfinite(v)]
-    if valid:
-        avg = sum(valid) / len(valid)
-        avg_var.set(f"Avg (valid {len(valid)}): {avg:.2f} °C")
-    else:
-        avg_var.set("Avg (valid 0): —")
+    # ── Logging helpers ────────────────────────────────────────────────────
+    def start_logging(self) -> None:
+        default_name = f"tc_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        path_str = filedialog.asksaveasfilename(
+            title="Save CSV log",
+            initialfile=default_name,
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        if not path_str:
+            return
+        self.log_path = Path(path_str)
+        try:
+            self.log_fh = self.log_path.open("w", newline="", encoding="utf-8")
+        except OSError as exc:
+            self.log_var.set(f"Log error: {exc}")
+            return
+        self.log_writer = csv.writer(self.log_fh)
+        header = ["time_s"] + [f"temp{i}_C" for i in range(MAX_SENSORS)] + ["valve", "mode"]
+        self.log_writer.writerow(header)
+        self.log_fh.flush()
+        self.log_enabled = True
+        self.log_var.set(f"Logging to: {self.log_path.name}")
+        # Only reconfigure the button if it still exists
+        if self.log_btn and self.log_btn.winfo_exists():
+            self.log_btn.configure(text="Stop Logging", command=self.stop_logging)
 
-    # update side labels
-    state_var.set("OPEN" if valve else "CLOSED")
-    state_lbl.configure(bg=("green" if valve else "light gray"))
-    mode_text = {"A": "AUTO", "O": "FORCED OPEN", "C": "FORCED CLOSE"}.get(mode_char.upper(), "AUTO")
-    mode_var.set(f"Mode: {mode_text}")
+    def stop_logging(self, *, ui_update: bool = True) -> None:
+        """Stop CSV logging. If ui_update=False, do not touch Tk widgets."""
+        if self.log_enabled:
+            try:
+                if self.log_fh:
+                    self.log_fh.flush()
+                    self.log_fh.close()
+            except OSError:
+                pass
+        self.log_enabled = False
+        self.log_fh = None
+        self.log_writer = None
 
-    canvas.draw_idle()
-    return (*lines, hline)
+        if ui_update and self.root and self.root.winfo_exists():
+            try:
+                if self.log_var:
+                    self.log_var.set("Logging: off")
+                if self.log_btn and self.log_btn.winfo_exists():
+                    self.log_btn.configure(text="Start Logging", command=self.start_logging)
+            except tk.TclError:
+                # Widget was destroyed between existence check and configure; ignore
+                pass
 
-ani = FuncAnimation(fig, update, init_func=init, interval=1000, blit=False, cache_frame_data=False)
+    def _log_row(self, t_sec: float, vals: List[float], valve: int, mode_char: str) -> None:
+        if not (self.log_enabled and self.log_writer):
+            return
+        row: List[str] = [f"{t_sec:.3f}"]
+        for i in range(MAX_SENSORS):
+            v = vals[i] if i < len(vals) else math.nan
+            row.append(f"{v:.2f}" if isinstance(v, float) and math.isfinite(v) else "nan")
+        row.extend([str(int(valve)), mode_char[:1]])
+        self.log_writer.writerow(row)
+        if self.log_fh:
+            self.log_fh.flush()
 
-def on_close():
-    try:
-        ser.close()
-    except Exception:
-        pass
-    root.destroy()
+    # ── GUI helpers ───────────────────────────────────────────────────────
+    def _rebuild_legend(self, active: int) -> None:
+        handles = [self.lines[i] for i in range(active)] + [self.hline]
+        labels = [f"U{i}" for i in range(active)] + [f"Set-point ({SETPOINT_C} °C)"]
+        self.axes.legend(handles, labels, loc="upper left", ncol=2)
 
-root.protocol("WM_DELETE_WINDOW", on_close)
-root.mainloop()
+    def run(self) -> None:
+        try:
+            self.root.mainloop()
+        finally:
+            self.cleanup()
+
+    def send_cmd(self, cmd: str) -> None:
+        try:
+            self.serial.write((cmd + "\n").encode("ascii"))
+        except (SerialException, OSError) as exc:
+            self.state_lbl.configure(bg="light gray")
+            print(f"[WARN] Serial write failed: {exc}")
+
+    def reset_plot(self) -> None:
+        self.start_time = None
+        self.times.clear()
+        for dq in self.temps:
+            dq.clear()
+        for line_obj in self.lines:
+            line_obj.set_data([], [])
+            line_obj.set_alpha(0.25)
+        self.axes.set_xlim(0, X_MAX_MIN)
+        self.canvas.draw_idle()
+
+    def on_close(self) -> None:
+        """Stop animation, stop logging (with UI updates), close serial, destroy Tk."""
+        if not self.running:
+            return
+        self.running = False
+        # Stop the animation timer first
+        try:
+            if self.anim and self.anim.event_source:
+                self.anim.event_source.stop()
+        except Exception:
+            pass
+        # Stop logging while UI is still alive; guard UI updates inside
+        self.stop_logging(ui_update=True)
+        # Proceed with cleanup and destroy
+        self.cleanup()
+        try:
+            self.root.quit()
+        finally:
+            # After this, Tk widgets are gone; don't touch them anymore
+            self.root.destroy()
+
+    # ── Animation ─────────────────────────────────────────────────────────
+    def init_anim(self):
+        for line_obj in self.lines:
+            line_obj.set_data([], [])
+            line_obj.set_alpha(0.25)
+        self.axes.set_xlim(0, X_MAX_MIN)
+        return (*self.lines, self.hline)
+
+    def update(self, _frame):
+        if not self.running:
+            return (*self.lines, self.hline)
+
+        latest = None
+
+        # Drain serial; detect header; keep last complete line
+        try:
+            while self.serial.in_waiting:
+                raw = self.serial.readline().decode("utf-8", errors="ignore").strip()
+                if not raw:
+                    continue
+                if raw.startswith("time_s"):
+                    parts = [p.strip() for p in raw.split(",")]
+                    detected = sum(1 for p in parts if p.lower().startswith("temp"))
+                    if 1 <= detected <= MAX_SENSORS:
+                        self.nsensors = detected
+                    continue
+                if raw.startswith("#"):
+                    continue
+                parsed = self.parse_line_flexible(raw)
+                if parsed:
+                    latest = parsed
+        except (SerialException, OSError) as exc:
+            print(f"[WARN] Serial read failed: {exc}")
+            return (*self.lines, self.hline)
+
+        if latest is None:
+            return (*self.lines, self.hline)
+
+        t_sec, vals, valve, mode_char = latest
+
+        # Legend update if sensor count changed
+        if self.legend_nsensors != self.nsensors:
+            self._rebuild_legend(self.nsensors)
+            self.legend_nsensors = self.nsensors
+
+        if self.start_time is None:
+            self.start_time = t_sec
+
+        t_min = (t_sec - self.start_time) / 60.0
+        self.times.append(t_min)
+        for i in range(MAX_SENSORS):
+            v = vals[i] if i < len(vals) else math.nan
+            self.temps[i].append(v)
+
+        # Update lines
+        for i, line_obj in enumerate(self.lines):
+            line_obj.set_data(self.times, self.temps[i])
+            last_v = self.temps[i][-1] if self.temps[i] else math.nan
+            is_active = (i < self.nsensors) and isinstance(last_v, float) and math.isfinite(last_v)
+            line_obj.set_alpha(1.0 if is_active else (0.35 if i < self.nsensors else 0.0))
+
+        # Fixed x-limits
+        self.axes.set_xlim(0, X_MAX_MIN)
+
+        # Right panel stats
+        valid_vals = [v for v in vals[:self.nsensors] if isinstance(v, float) and math.isfinite(v)]
+        k_valid = len(valid_vals)
+        self.avg_var.set(f"Avg (valid {k_valid}): {sum(valid_vals) / k_valid:.2f} °C" if k_valid else "Avg (valid 0): —")
+        self.count_var.set(f"Sensors active: {self.nsensors}  •  Valid now: {k_valid}")
+
+        self.state_var.set("OPEN" if valve else "CLOSED")
+        self.state_lbl.configure(bg=("green" if valve else "light gray"))
+        mode_text = {"A": "AUTO", "O": "FORCED OPEN", "C": "FORCED CLOSE"}.get(mode_char.upper(), "AUTO")
+        self.mode_var.set(f"Mode: {mode_text}")
+
+        # Log the latest row (1 Hz)
+        self._log_row(t_sec, vals, valve, mode_char)
+
+        self.canvas.draw_idle()
+        return (*self.lines, self.hline)
+
+    # ── Parsing ───────────────────────────────────────────────────────────
+    @staticmethod
+    def _sanitize_temp(val_raw: str) -> float:
+        text = val_raw.strip().lower()
+        if text in {"", "nan"}:
+            return math.nan
+        try:
+            value = float(text)
+        except ValueError:
+            return math.nan
+        if DETECT_ZERO_AS_NC and abs(value) < 1e-12:
+            return math.nan
+        if not (VALID_RANGE_C[0] <= value <= VALID_RANGE_C[1]):
+            return math.nan
+        return value
+
+    def parse_line_flexible(self, raw: str) -> Optional[Tuple[float, List[float], int, str]]:
+        parts = [p.strip() for p in raw.split(",")]
+        if len(parts) < 3:
+            return None
+        try:
+            t_sec = float(parts[0])
+        except ValueError:
+            return None
+        try:
+            valve = int(parts[-2])
+            mode_char = parts[-1][:1]
+        except (ValueError, IndexError):
+            return None
+        temp_fields = parts[1:-2]
+        if not temp_fields:
+            return None
+        if 1 <= len(temp_fields) <= MAX_SENSORS:
+            self.nsensors = len(temp_fields)
+        vals = [self._sanitize_temp(s) for s in temp_fields[:MAX_SENSORS]]
+        return t_sec, vals, valve, mode_char
+
+    # ── Cleanup ───────────────────────────────────────────────────────────
+    def cleanup(self) -> None:
+        """Stop timers, close files/serial, close figure. Never touch UI here."""
+        try:
+            if self.anim and self.anim.event_source:
+                self.anim.event_source.stop()
+        except Exception:
+            pass
+        # Close log file without touching UI (prevents TclError on shutdown)
+        self.stop_logging(ui_update=False)
+        try:
+            if self.serial and self.serial.is_open:
+                self.serial.close()
+        except SerialException:
+            pass
+        try:
+            plt.close(self.figure)
+        except Exception:
+            pass
+
+
+def main() -> None:
+    app = TCMonitorApp()
+    app.run()
+
+
+if __name__ == "__main__":
+    main()
