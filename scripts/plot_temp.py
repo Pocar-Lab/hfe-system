@@ -74,6 +74,7 @@ class TCMonitorApp:
 
         # GUI
         self.root = tk.Tk()
+        self.root.geometry("1200x700")
         self.root.title("TC Monitor (MAX31856) + Valve Control")
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.columnconfigure(0, weight=1)
@@ -89,7 +90,7 @@ class TCMonitorApp:
         self.hline = self.axes.axhline(SETPOINT_C, linestyle="--", label=f"Set-point ({SETPOINT_C} °C)")
         self.axes.set_xlabel("Time (min)")
         self.axes.set_ylabel("Temperature (°C)")
-        self.axes.set_ylim(0, 50)
+        self.axes.set_ylim(-170, 25)
         self.axes.set_xlim(0, X_MAX_MIN)
         self._rebuild_legend(0)
 
@@ -199,7 +200,18 @@ class TCMonitorApp:
     def _rebuild_legend(self, active: int) -> None:
         handles = [self.lines[i] for i in range(active)] + [self.hline]
         labels = [f"U{i}" for i in range(active)] + [f"Set-point ({SETPOINT_C} °C)"]
-        self.axes.legend(handles, labels, loc="upper left", ncol=2)
+    
+        self.axes.legend(
+            handles,
+            labels,
+            loc="upper left",
+            bbox_to_anchor=(1.02, 1.0),  # Outside top-right
+            borderaxespad=0,
+            frameon=True,
+            ncol=1
+        )
+        self.figure.tight_layout(rect=[0, 0, 0.85, 1])  # Shrink plot to leave space on right
+
 
     def run(self) -> None:
         try:
@@ -392,3 +404,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+ 
