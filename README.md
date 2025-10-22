@@ -37,10 +37,9 @@
      Replace the host with the supervisor’s IP; omit the port to default to 8000.  
   2. Watch the Status line in the UI for “telemetry connected”; buttons now send ASCII commands to the controller.  
   3. Use Ctrl+C in either terminal to stop the client or supervisor. Cleanup handles disconnects gracefully.
-- Browser UI (no X forwarding required): open `http://<host>:8000/ui`
-  - For SSH access from a laptop, forward the port:  
-    `ssh -L 8000:localhost:8000 <user>@<host>` then browse to `http://localhost:8000/ui`
-  - The page mirrors the multi-channel chart, valve controls, and CSV logging. The valve buttons POST to `/api/command`, and logging lets you download a CSV snapshot client-side.
+- Web GUI: `http://<host>:8000/ui` (supports dark/light mode, live chart, valve override, client-side CSV logging)
+  - Forward over SSH: `ssh -L 8000:localhost:8000 <user>@<host>` then browse `http://localhost:8000/ui`
+  - Copy link with `?token=...` if auth enabled, or load without token when `Auth required: False`.
 
 ## Data Analysis
 - Command-line pipeline: `hfe-hx --input data/raw/<file>.csv`
