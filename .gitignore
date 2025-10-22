@@ -5,3 +5,4 @@
 .vscode/ipch
 supervisor/.venv
 .venv*/
+analysis/src/hfe_ana/__pycache__

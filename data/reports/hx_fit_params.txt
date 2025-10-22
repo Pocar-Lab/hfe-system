@@ -1,5 +1,1 @@
-UA_early_WK: 21.851
-H_W: 144.1
-R2: 0.976
-Cp_JK: 20223.0
-Volume_L: 5.4
+UA_early_WK: 21.851H_W: 144.1R2: 0.976N_regression: 33Cp_JK: 20223.0Volume_L: 5.4

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import json
+import math
 import asyncio
 import logging
 from pathlib import Path
@@ -66,6 +67,60 @@ def require_auth(authorization: Optional[str]) -> None:
     if supplied != AUTH_TOKEN:
         raise HTTPException(401, "Unauthorized")
 
+
+# ────────────────────── serial parsing helpers ─────────────────
+def parse_serial_payload(raw: bytes) -> Optional[dict]:
+    """
+    Convert a serial line (CSV or JSON) into a telemetry dict compatible with clients.
+    """
+    text = raw.decode("utf-8", errors="ignore").strip()
+    if not text or text.startswith("#"):
+        return None
+    # JSON payload
+    try:
+        msg = json.loads(text)
+    except json.JSONDecodeError:
+        msg = None
+    if isinstance(msg, dict):
+        return msg
+    if text.startswith("time_s"):
+        # Header line; ignore after logging
+        return {"type": "header", "line": text}
+    parts = [p.strip() for p in text.split(",")]
+    if len(parts) < 3:
+        return {"type": "raw", "line": text}
+    try:
+        t_sec = float(parts[0])
+    except ValueError:
+        return {"type": "raw", "line": text}
+    temps: list[float] = []
+    for field in parts[1:-2]:
+        try:
+            value = float(field)
+            if DETECT_ZERO_AS_NC and abs(value) < 1e-12:
+                value = math.nan
+        except ValueError:
+            value = math.nan
+        temps.append(value)
+    try:
+        valve = int(parts[-2])
+    except ValueError:
+        valve = None
+    mode = parts[-1][:1] if parts[-1] else ""
+    payload = {
+        "type": "telemetry",
+        "t": t_sec,
+        "temps": temps,
+        "valve": valve,
+        "mode": mode,
+    }
+    if temps:
+        first = temps[0]
+        if isinstance(first, float) and math.isfinite(first):
+            payload["tC"] = first
+    return payload
+
+DETECT_ZERO_AS_NC = True
 
 # ───────────────────── optional serial support ─────────────────
 try:
@@ -144,19 +199,16 @@ async def lifespan(app: FastAPI):
                     self.buf += data
                     while b"\n" in self.buf:
                         line, self.buf = self.buf.split(b"\n", 1)
+                        payload = parse_serial_payload(line)
+                        if payload is None:
+                            continue
                         try:
-                            msg = json.loads(line.decode("utf-8"))
-                        except Exception:
-                            # If firmware prints CSV or other text early, wrap as raw
-                            msg = {"type": "raw", "line": line.decode(errors="ignore")}
-                        try:
-                            self.q.put_nowait(msg)
+                            self.q.put_nowait(payload)
                         except asyncio.QueueFull:
-                            # Drop oldest if full (backpressure)
                             try:
                                 _ = self.q.get_nowait()
                                 self.q.task_done()
-                                self.q.put_nowait(msg)
+                                self.q.put_nowait(payload)
                             except Exception:
                                 pass
 

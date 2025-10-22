@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hfe-ana"
+version = "0.1.0"
+description = "Heat exchanger analysis helpers for the HFE System project."
+requires-python = ">=3.10"
+dependencies = [
+    "matplotlib>=3.8",
+    "numpy>=1.24",
+    "pandas>=2.2",
+    "scikit-learn>=1.4",
+]
+
+[project.scripts]
+hfe-hx = "hfe_ana.cli.hx_analyze:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+hfe_ana = ["py.typed"]

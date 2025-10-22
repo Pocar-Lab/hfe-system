@@ -1,9 +1,34 @@
-- Open VSCode
-- Activate python venv with terminal command: source /home/pocar-lab/platformio-venv/bin/activate
-- Verify that PlatformIO is running (see the alien icon to see its status)
-- Build/Upload project everytime the main.cpp is modified or for first start
-- python3 scripts/plot_temp.py
+# HFE System
 
+## Environment Setup
+- (Optional) Activate the PlatformIO environment for firmware work:
+  `source /home/pocar-lab/platformio-venv/bin/activate`
+- Create a Python virtual environment for the supervisor + tooling:
+  `python3 -m venv .venv && source .venv/bin/activate`
+- Install Python dependencies:
+  `pip install -r supervisor/requirements.txt`
+- Install the analysis helpers for notebooks/CLI:
+  `pip install -e analysis`
 
-FOR GITHUB:
-- See source control icon in the toolbar to commit and upload changes to GitHub
+## Firmware Workflow
+- `cd firmware`
+- `platformio run -t upload`
+
+## Supervisor API
+- Configure `config/config.yaml` with the serial port, bind host/port, and (optionally) `auth_token`.
+- Launch the API: `cd supervisor && ./run.sh`
+- Override at runtime with env vars:
+  `SUPERVISOR_TOKEN` (auth), `SUP_HOST` (host:port for clients), `SUP_API` (HTTP base URL).
+
+## Live Clients
+- Serial/UI logger: `python3 scripts/plot_temp.py` (set `PORT` if needed).
+- Websocket Tk UI: `python3 clients/tk_client.py`
+  - Reads `SUP_HOST` and `SUPERVISOR_TOKEN` to find the supervisor.
+
+## Data Analysis
+- Command-line pipeline: `hfe-hx --input data/raw/<file>.csv`
+  - Outputs go to `data/processed/` and `data/reports/` (configurable via flags).
+- Notebook: open `analysis/notebooks/HX_performance_analysis.ipynb` after installing the analysis package above.
+
+## Git / GitHub
+- Use the VS Code Source Control pane to commit and push changes.
