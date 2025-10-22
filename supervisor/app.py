@@ -261,8 +261,14 @@ async def api_ping(authorization: Optional[str] = Header(default=None)):
 @app.post("/api/command")
 async def api_command(body: dict, authorization: Optional[str] = Header(default=None)):
     require_auth(authorization)
-    # Echo if no serial
-    line = (json.dumps(body) + "\n").encode("utf-8")
+    cmd_text = str(body.get("cmd") or body.get("command") or "").strip()
+    if cmd_text:
+        try:
+            line = (cmd_text + "\n").encode("ascii")
+        except UnicodeEncodeError:
+            raise HTTPException(400, "Command must be ASCII-compatible")
+    else:
+        line = (json.dumps(body) + "\n").encode("utf-8")
     if getattr(app.state, "ser_transport", None):
         try:
             app.state.ser_transport.write(line)
@@ -288,8 +294,17 @@ async def ws_endpoint(ws: WebSocket, token: Optional[str] = Query(default=None))
         while True:
             try:
                 await ws.receive_text()
-            except Exception:
+            except asyncio.CancelledError:
+                raise
+            except WebSocketDisconnect:
+                break
+            except RuntimeError as exc:
+                # Starlette raises RuntimeError after disconnect; treat as closed
+                log.debug("WS receive after disconnect: %s", exc)
+                break
+            except Exception as exc:
                 # Many clients never send anything; small sleep avoids a tight loop
+                log.debug("WS receive error: %s", exc)
                 await asyncio.sleep(5.0)
     except WebSocketDisconnect:
         pass

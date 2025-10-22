@@ -6,3 +6,4 @@
 supervisor/.venv
 .venv*/
 analysis/src/hfe_ana/__pycache__
+supervisor/__pycache__/
