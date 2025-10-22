@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>TC Monitor (Web UI)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="styles.css" />
+    <meta name="color-scheme" content="dark light" />
+    <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+    <script defer src="app.js"></script>
+  </head>
+  <body>
+    <header>
+      <h1>TC Monitor (Web)</h1>
+      <div id="status-bar">
+        <span id="connection-status">Status: initializing…</span>
+        <span id="logging-status">Logging: off</span>
+        <span id="command-status"></span>
+      </div>
+    </header>
+
+    <main>
+      <section id="chart-section">
+        <canvas id="temp-chart" aria-label="Temperature chart"></canvas>
+      </section>
+
+      <section id="stats-section">
+        <div class="stat-card">
+          <h2>Valve</h2>
+          <p id="valve-state" class="valve-closed">CLOSED</p>
+          <p id="mode-state">Mode: —</p>
+        </div>
+        <div class="stat-card">
+          <h2>Sensors</h2>
+          <p id="sensor-count">Active: —</p>
+          <p id="valid-count">Valid now: —</p>
+          <p id="valid-list" class="muted">Valid sensors: —</p>
+        </div>
+        <div class="stat-card">
+          <h2>Average (valid)</h2>
+          <p id="avg-temp">—</p>
+        </div>
+      </section>
+
+      <section id="controls-section">
+        <div class="control-group">
+          <h2>Valve Override</h2>
+          <div class="button-row">
+            <button data-cmd="VALVE OPEN" class="primary">Open</button>
+            <button data-cmd="VALVE CLOSE" class="primary">Close</button>
+            <button data-cmd="VALVE AUTO">Auto</button>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <h2>Logging</h2>
+          <div class="button-row">
+            <button id="start-logging" class="primary">Start Logging</button>
+            <button id="stop-logging" disabled>Stop &amp; Download</button>
+            <button id="clear-logging" disabled>Clear Buffer</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

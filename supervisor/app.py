@@ -20,6 +20,7 @@ from fastapi import (
     Query,
 )
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 # ─────────────────────────── logging ───────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -107,17 +108,24 @@ def parse_serial_payload(raw: bytes) -> Optional[dict]:
     except ValueError:
         valve = None
     mode = parts[-1][:1] if parts[-1] else ""
+    safe_temps: list[float | None] = []
+    for v in temps:
+        if isinstance(v, float) and math.isfinite(v):
+            safe_temps.append(v)
+        else:
+            safe_temps.append(None)
+
     payload = {
         "type": "telemetry",
         "t": t_sec,
-        "temps": temps,
+        "temps": safe_temps,
         "valve": valve,
         "mode": mode,
     }
-    if temps:
-        first = temps[0]
-        if isinstance(first, float) and math.isfinite(first):
-            payload["tC"] = first
+    for item in safe_temps:
+        if isinstance(item, float) and math.isfinite(item):
+            payload["tC"] = item
+            break
     return payload
 
 DETECT_ZERO_AS_NC = True
@@ -243,6 +251,10 @@ async def lifespan(app: FastAPI):
 
 # ───────────────────────── FastAPI app ─────────────────────────
 app = FastAPI(lifespan=lifespan)
+
+WEB_UI_DIR = REPO / "clients" / "web"
+if WEB_UI_DIR.exists():
+    app.mount("/ui", StaticFiles(directory=WEB_UI_DIR, html=True), name="ui")
 
 # Public health (no auth)
 @app.get("/health")
