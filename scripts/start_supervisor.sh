@@ -49,7 +49,7 @@ if ((${#existing_pids[@]} > 0)); then
 fi
 
 if ! command -v uvicorn >/dev/null 2>&1; then
-  echo "uvicorn not found on PATH. Install dependencies first: pip install -r requirements.txt" >&2
+  echo "uvicorn not found on PATH. Install dependencies first: pip install -e .[analysis,notebooks]" >&2
   exit 1
 fi
 
