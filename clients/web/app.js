@@ -23,9 +23,15 @@
   const validCountEl = document.getElementById('valid-count');
   const avgTempEl = document.getElementById('avg-temp');
   const validListEl = document.getElementById('valid-list');
+  const sensorValuesEl = document.getElementById('sensor-values');
   const startLoggingBtn = document.getElementById('start-logging');
   const stopLoggingBtn = document.getElementById('stop-logging');
   const clearLoggingBtn = document.getElementById('clear-logging');
+  const setpointForm = document.getElementById('setpoint-form');
+  const setpointInput = document.getElementById('setpoint-input');
+  const hysteresisInput = document.getElementById('hysteresis-input');
+  const telemetryInput = document.getElementById('telemetry-input');
+  const sensorCheckboxesEl = document.getElementById('sensor-checkboxes');
 
   const ctx = document.getElementById('temp-chart').getContext('2d');
   const customCss = getComputedStyle(document.documentElement);
@@ -57,8 +63,14 @@
     data: [],
   }));
 
+  let currentSetpoint = SETPOINT;
+
+  function setpointLabel() {
+    return `Set-point (${currentSetpoint.toFixed(1)} °C)`;
+  }
+
   const setpointDataset = {
-    label: `Set-point (${SETPOINT.toFixed(1)} °C)`,
+    label: setpointLabel(),
     borderColor: '#adb5bd',
     borderWidth: 1,
     borderDash: [6, 6],
@@ -140,8 +152,12 @@
   const setpointSeries = [];
   const valveSeries = [];
 
+  let sensorSelections = Array(MAX_SENSORS).fill(true);
+  let renderedCheckboxCount = 0;
+  let latestSnapshot = null;
   let loggingEnabled = false;
   let loggingRows = [];
+  let serverLogInfo = { active: false, filename: null, path: null, rows: 0 };
 
   function setConnectionStatus(text, tone = 'normal') {
     statusEl.textContent = `Status: ${text}`;
@@ -152,6 +168,122 @@
     loggingStatusEl.textContent = `Logging: ${text}`;
   }
 
+  function updateLoggingStatusLabel() {
+    const parts = [];
+    if (serverLogInfo.active) {
+      const serverLabel = serverLogInfo.filename || 'server log';
+      const serverRows = typeof serverLogInfo.rows === 'number' ? serverLogInfo.rows : 0;
+      parts.push(`${serverLabel} (${serverRows} rows)`);
+    }
+    if (loggingEnabled) {
+      parts.push(`download buffer: ${loggingRows.length} rows`);
+    }
+    if (parts.length) {
+      setLoggingStatus(`on (${parts.join(' | ')})`);
+    } else {
+      setLoggingStatus('off');
+    }
+  }
+
+  function ensureSensorSelections(count) {
+    for (let i = 0; i < count; i += 1) {
+      if (typeof sensorSelections[i] !== 'boolean') {
+        sensorSelections[i] = true;
+      }
+    }
+  }
+
+  function renderSensorCheckboxes(count) {
+    if (!sensorCheckboxesEl) {
+      return;
+    }
+    sensorCheckboxesEl.innerHTML = '';
+    if (!count) {
+      sensorCheckboxesEl.innerHTML = '<p class="muted">No sensors detected yet.</p>';
+      renderedCheckboxCount = 0;
+      return;
+    }
+    ensureSensorSelections(count);
+    const fragment = document.createDocumentFragment();
+    for (let i = 0; i < count; i += 1) {
+      const label = document.createElement('label');
+      label.className = 'sensor-checkbox';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = sensorSelections[i] !== false;
+      input.dataset.index = String(i);
+      input.addEventListener('change', onSensorCheckboxChange);
+      const span = document.createElement('span');
+      span.textContent = `U${i}`;
+      label.appendChild(input);
+      label.appendChild(span);
+      fragment.appendChild(label);
+    }
+    sensorCheckboxesEl.appendChild(fragment);
+    renderedCheckboxCount = count;
+  }
+
+  function onSensorCheckboxChange(event) {
+    const idx = Number(event.currentTarget.dataset.index);
+    if (Number.isNaN(idx)) {
+      return;
+    }
+    sensorSelections[idx] = event.currentTarget.checked;
+    updateSensorStats();
+  }
+
+  function updateSensorStats() {
+    if (!latestSnapshot) {
+      return;
+    }
+    const { temps, sensorCount } = latestSnapshot;
+    if (!sensorValuesEl) {
+      return;
+    }
+    if (sensorCount !== renderedCheckboxCount) {
+      renderSensorCheckboxes(sensorCount);
+    } else {
+      ensureSensorSelections(sensorCount);
+    }
+
+    let validNow = 0;
+    let selectedValid = 0;
+    let selectedSum = 0;
+    const selectedLabels = [];
+    const chips = [];
+
+    for (let i = 0; i < sensorCount; i += 1) {
+      const value = temps[i];
+      const finite = Number.isFinite(value);
+      const selected = sensorSelections[i] !== false;
+      const classes = ['sensor-chip'];
+      if (selected) {
+        classes.push('selected');
+      } else {
+        classes.push('excluded');
+      }
+      if (!finite) {
+        classes.push('inactive');
+      }
+      const displayValue = finite ? `${value.toFixed(2)} °C` : '—';
+      chips.push(`<div class="${classes.join(' ')}">U${i}: ${displayValue}</div>`);
+      if (finite) {
+        validNow += 1;
+        if (selected) {
+          selectedValid += 1;
+          selectedSum += value;
+          selectedLabels.push(`U${i}`);
+        }
+      }
+    }
+
+    sensorValuesEl.innerHTML = chips.length ? chips.join('') : '<p class="muted">No telemetry yet.</p>';
+    sensorCountEl.textContent = `Active: ${sensorCount}`;
+    validCountEl.textContent = `Valid now: ${validNow} • Selected: ${selectedValid}`;
+    validListEl.textContent = selectedLabels.length ? `Included sensors: ${selectedLabels.join(', ')}` : 'Included sensors: —';
+    avgTempEl.textContent = selectedValid ? `${(selectedSum / selectedValid).toFixed(2)} °C` : '—';
+  }
+
   function setCommandStatus(text, tone = 'normal') {
     commandStatusEl.textContent = text;
     commandStatusEl.dataset.tone = tone;
@@ -159,6 +291,57 @@
       setTimeout(() => {
         commandStatusEl.textContent = '';
       }, 4000);
+    }
+  }
+
+  async function apiJson(path, options = {}) {
+    const headers = options.headers ? { ...options.headers } : {};
+    if (authHeaderValue) {
+      headers.Authorization = authHeaderValue;
+    }
+    if (!headers['Content-Type'] && options.body !== undefined && !(options.body instanceof FormData)) {
+      headers['Content-Type'] = 'application/json';
+    }
+    const response = await fetch(path, { ...options, headers });
+    if (!response.ok) {
+      let detail = '';
+      try {
+        detail = await response.text();
+      } catch (err) {
+        detail = response.statusText;
+      }
+      throw new Error(detail || response.statusText);
+    }
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      return response.json();
+    }
+    return {};
+  }
+
+  async function refreshLoggingStatus() {
+    try {
+      const data = await apiJson('/api/logging/status', { method: 'GET' });
+      serverLogInfo = {
+        active: Boolean(data.active),
+        filename: data.filename || null,
+        path: data.path || null,
+        rows: typeof data.rows === 'number' ? data.rows : 0,
+      };
+      loggingEnabled = serverLogInfo.active;
+      if (serverLogInfo.active) {
+        loggingRows = [];
+      }
+      updateLoggingStatusLabel();
+      startLoggingBtn.disabled = serverLogInfo.active;
+      stopLoggingBtn.disabled = !serverLogInfo.active;
+      clearLoggingBtn.disabled = loggingRows.length === 0;
+    } catch (err) {
+      console.warn('Logging status fetch failed', err);
+      updateLoggingStatusLabel();
+      startLoggingBtn.disabled = false;
+      stopLoggingBtn.disabled = true;
+      clearLoggingBtn.disabled = loggingRows.length === 0;
     }
   }
 
@@ -250,29 +433,12 @@
       sensorDatasets[i].hidden = i >= sensorCount;
     }
 
-    pushSeries(setpointSeries, { x: tMin, y: SETPOINT });
+    pushSeries(setpointSeries, { x: tMin, y: currentSetpoint });
     setpointDataset.data = setpointSeries;
 
     const valve = Number.isFinite(data.valve) ? Number(data.valve) : 0;
     pushSeries(valveSeries, { x: tMin, y: valve });
     valveDataset.data = valveSeries;
-
-    const validValues = temps.slice(0, sensorCount).filter((v) => Number.isFinite(v));
-    const avg = validValues.length
-      ? validValues.reduce((acc, v) => acc + v, 0) / validValues.length
-      : null;
-
-    const validLabels = [];
-    for (let i = 0; i < sensorCount; i += 1) {
-      if (Number.isFinite(temps[i])) {
-        validLabels.push(`U${i}`);
-      }
-    }
-
-    avgTempEl.textContent = validValues.length ? `${avg.toFixed(2)} °C` : '—';
-    sensorCountEl.textContent = `Active: ${sensorCount}`;
-    validCountEl.textContent = `Valid now: ${validValues.length}`;
-    validListEl.textContent = validLabels.length ? `Valid sensors: ${validLabels.join(', ')}` : 'Valid sensors: —';
 
     const valveOpen = Boolean(valve);
     valveStateEl.textContent = valveOpen ? 'OPEN' : 'CLOSED';
@@ -288,6 +454,19 @@
         : 'AUTO';
     modeStateEl.textContent = `Mode: ${modeText}`;
 
+    latestSnapshot = {
+      temps: temps.slice(0, MAX_SENSORS),
+      sensorCount,
+      valve,
+      modeChar,
+    };
+    updateSensorStats();
+
+    if (serverLogInfo.active) {
+      const currentRows = typeof serverLogInfo.rows === 'number' ? serverLogInfo.rows : 0;
+      serverLogInfo.rows = currentRows + 1;
+    }
+
     if (loggingEnabled) {
       const row = [ts];
       for (let i = 0; i < MAX_SENSORS; i += 1) {
@@ -296,9 +475,10 @@
       row.push(valve);
       row.push(modeChar);
       loggingRows.push(row);
-      setLoggingStatus(`on (${loggingRows.length} rows)`);
       clearLoggingBtn.disabled = false;
     }
+
+    updateLoggingStatusLabel();
 
     updateChartRanges();
     chart.update('none');
@@ -307,21 +487,10 @@
   async function sendCommand(cmd) {
     try {
       setCommandStatus(`Sending "${cmd}"…`, 'info');
-      const headers = {
-        'Content-Type': 'application/json',
-      };
-      if (authHeaderValue) {
-        headers.Authorization = authHeaderValue;
-      }
-      const response = await fetch('/api/command', {
+      await apiJson('/api/command', {
         method: 'POST',
-        headers,
         body: JSON.stringify({ cmd }),
       });
-      if (!response.ok) {
-        const detail = await response.text();
-        throw new Error(detail || response.statusText);
-      }
       setCommandStatus(`Command "${cmd}" sent`, 'success');
     } catch (err) {
       console.error('Command error', err);
@@ -329,23 +498,77 @@
     }
   }
 
-  function startLogging() {
-    loggingEnabled = true;
-    loggingRows = [];
-    setLoggingStatus('on (0 rows)');
-    startLoggingBtn.disabled = true;
-    stopLoggingBtn.disabled = false;
-    clearLoggingBtn.disabled = true;
-  }
-
-  function stopLogging(download = true) {
-    if (!loggingEnabled) {
+  async function startLogging() {
+    if (serverLogInfo.active) {
+      setCommandStatus('Logging already active', 'warn');
       return;
     }
+    try {
+      setCommandStatus('Starting logging…', 'info');
+      startLoggingBtn.disabled = true;
+      const data = await apiJson('/api/logging/start', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      serverLogInfo = {
+        active: Boolean(data.active),
+        filename: data.filename || null,
+        path: data.path || null,
+        rows: typeof data.rows === 'number' ? data.rows : 0,
+      };
+      loggingEnabled = true;
+      loggingRows = [];
+      updateLoggingStatusLabel();
+      startLoggingBtn.disabled = true;
+      stopLoggingBtn.disabled = false;
+      clearLoggingBtn.disabled = true;
+      setCommandStatus(`Logging to ${serverLogInfo.path || serverLogInfo.filename || 'server log'}`, 'success');
+    } catch (err) {
+      console.error('Start logging failed', err);
+      setCommandStatus(`Logging start failed: ${err.message}`, 'error');
+      loggingEnabled = serverLogInfo.active;
+      updateLoggingStatusLabel();
+      startLoggingBtn.disabled = serverLogInfo.active;
+      stopLoggingBtn.disabled = !serverLogInfo.active;
+    }
+  }
+
+  async function stopLogging(download = true) {
+    if (!loggingEnabled && !serverLogInfo.active) {
+      setCommandStatus('Logging not active', 'warn');
+      return;
+    }
+    try {
+      stopLoggingBtn.disabled = true;
+      const data = await apiJson('/api/logging/stop', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      if (data && data.ok) {
+        serverLogInfo = {
+          active: false,
+          filename: data.filename || serverLogInfo.filename,
+          path: data.path || serverLogInfo.path,
+          rows: typeof data.rows === 'number' ? data.rows : 0,
+        };
+        const savedPath = serverLogInfo.path || serverLogInfo.filename;
+        if (savedPath) {
+          setCommandStatus(`Log saved to ${savedPath}`, 'success');
+        } else {
+          setCommandStatus('Logging stopped', 'success');
+        }
+      } else {
+        serverLogInfo.active = false;
+        setCommandStatus('Logging stopped', 'success');
+      }
+    } catch (err) {
+      console.error('Stop logging failed', err);
+      setCommandStatus(`Logging stop failed: ${err.message}`, 'error');
+    }
     loggingEnabled = false;
-    startLoggingBtn.disabled = false;
-    stopLoggingBtn.disabled = true;
-    setLoggingStatus('off');
+    startLoggingBtn.disabled = serverLogInfo.active;
+    stopLoggingBtn.disabled = !serverLogInfo.active;
+    updateLoggingStatusLabel();
     clearLoggingBtn.disabled = loggingRows.length === 0;
 
     if (download && loggingRows.length > 0) {
@@ -355,7 +578,7 @@
 
   function clearLogging() {
     loggingRows = [];
-    setLoggingStatus('off');
+    updateLoggingStatusLabel();
     clearLoggingBtn.disabled = true;
   }
 
@@ -405,7 +628,7 @@
     }, 1000);
     loggingRows = [];
     clearLoggingBtn.disabled = true;
-    setLoggingStatus('off');
+    updateLoggingStatusLabel();
   }
 
   document.querySelectorAll('button[data-cmd]').forEach((btn) => {
@@ -417,10 +640,59 @@
     });
   });
 
+  if (setpointForm) {
+    setpointForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!setpointInput) {
+        return;
+      }
+      const setpoint = parseFloat(setpointInput.value);
+      if (!Number.isFinite(setpoint)) {
+        setCommandStatus('Invalid setpoint value', 'error');
+        return;
+      }
+      const hysteresis = hysteresisInput ? parseFloat(hysteresisInput.value) : NaN;
+      const telemetryMs = telemetryInput ? parseInt(telemetryInput.value, 10) : NaN;
+    const payload = {
+      id: 'set_control',
+      setpoint_C: setpoint,
+      hysteresis_C: Number.isFinite(hysteresis) ? hysteresis : 0.5,
+      telemetry_ms: Number.isFinite(telemetryMs) ? Math.max(100, telemetryMs) : 1000,
+    };
+    try {
+      setCommandStatus('Updating setpoint…', 'info');
+      await apiJson('/api/command', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      currentSetpoint = payload.setpoint_C;
+      setpointSeries.length = 0;
+      setpointDataset.data = setpointSeries;
+      setpointDataset.label = setpointLabel();
+      if (setpointInput) {
+        setpointInput.value = payload.setpoint_C.toFixed(2);
+      }
+      if (hysteresisInput) {
+        hysteresisInput.value = payload.hysteresis_C.toFixed(2);
+      }
+      if (telemetryInput) {
+        telemetryInput.value = String(payload.telemetry_ms);
+      }
+      if (latestSnapshot) {
+        updateSensorStats();
+      }
+      chart.update('none');
+        setCommandStatus(`Setpoint set to ${payload.setpoint_C.toFixed(2)} °C`, 'success');
+      } catch (err) {
+        console.error('Setpoint update failed', err);
+        setCommandStatus(`Setpoint update failed: ${err.message}`, 'error');
+      }
+    });
+  }
+
   startLoggingBtn.addEventListener('click', () => startLogging());
   stopLoggingBtn.addEventListener('click', () => stopLogging(true));
   clearLoggingBtn.addEventListener('click', () => {
-    stopLogging(false);
     clearLogging();
   });
 
@@ -430,5 +702,24 @@
     }
   });
 
-  connectWebSocket();
+  if (setpointInput) {
+    setpointInput.value = currentSetpoint.toFixed(2);
+  }
+  if (hysteresisInput) {
+    const initialH = parseFloat(hysteresisInput.value);
+    hysteresisInput.value = Number.isFinite(initialH) ? initialH.toFixed(2) : '0.50';
+  }
+  if (telemetryInput && (!telemetryInput.value || Number(telemetryInput.value) <= 0)) {
+    telemetryInput.value = '1000';
+  }
+
+  renderSensorCheckboxes(0);
+
+  updateLoggingStatusLabel();
+
+  refreshLoggingStatus()
+    .catch(() => {})
+    .finally(() => {
+      connectWebSocket();
+    });
 })();
