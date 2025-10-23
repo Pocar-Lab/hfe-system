@@ -1,0 +1,20 @@
+INFO: Auth required: False; token prefix: (none)
+INFO:     Started server process [139967]
+INFO:     Waiting for application startup.
+INFO: Serial connected: /dev/ttyACM0 @ 115200
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     ('127.0.0.1', 41062) - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     ('127.0.0.1', 41064) - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:34792 - "GET /ui/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34792 - "GET /ui/styles.css HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:34802 - "GET /ui/app.js HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:34792 - "GET /api/logging/status HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 34812) - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:50132 - "GET /apple-touch-icon-precomposed.png HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:50142 - "GET /apple-touch-icon.png HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:50148 - "GET /favicon.ico HTTP/1.1" 404 Not Found

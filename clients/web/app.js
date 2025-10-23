@@ -32,6 +32,11 @@
   const hysteresisInput = document.getElementById('hysteresis-input');
   const telemetryInput = document.getElementById('telemetry-input');
   const sensorCheckboxesEl = document.getElementById('sensor-checkboxes');
+  const chartSectionEl = document.getElementById('chart-section');
+  const statsSectionEl = document.getElementById('stats-section');
+  const controlsSectionEl = document.getElementById('controls-section');
+  const headerEl = document.querySelector('header');
+  const statusStripEl = document.getElementById('status-strip');
 
   const ctx = document.getElementById('temp-chart').getContext('2d');
   const customCss = getComputedStyle(document.documentElement);
@@ -80,22 +85,10 @@
     data: [],
   };
 
-  const valveDataset = {
-    label: 'Valve (0/1)',
-    borderColor: '#f4d35e',
-    backgroundColor: 'rgba(244, 211, 94, 0.2)',
-    borderWidth: 2,
-    pointRadius: 0,
-    tension: 0,
-    stepped: true,
-    yAxisID: 'valve',
-    data: [],
-  };
-
   const chart = new Chart(ctx, {
     type: 'line',
     data: {
-      datasets: [...sensorDatasets, setpointDataset, valveDataset],
+      datasets: [...sensorDatasets, setpointDataset],
     },
     options: {
       responsive: true,
@@ -122,18 +115,6 @@
           ticks: { color: tickColor },
           grid: { color: gridColor },
         },
-        valve: {
-          position: 'right',
-          min: -0.1,
-          max: 1.1,
-          ticks: {
-            stepSize: 1,
-            color: tickColor,
-          },
-          grid: {
-            drawOnChartArea: false,
-          },
-        },
       },
       plugins: {
         legend: {
@@ -145,12 +126,112 @@
     },
   });
 
+  const MIN_CHART_CONTENT_HEIGHT = 260;
+  const MAX_CHART_CONTENT_HEIGHT = 760;
+  const AUTO_COMMAND_COOLDOWN_MS = 1500;
+  let pendingChartHeightFrame = null;
+  let chartResizeObserver = null;
+  let autoValveDesiredState = null;
+  let autoValveLastCommandTs = 0;
+  let clientAutoActive = false;
+
+  function computeChartContentHeight() {
+    if (!chartSectionEl) {
+      return null;
+    }
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    if (!viewportHeight) {
+      return null;
+    }
+
+    let reserved = 0;
+    if (headerEl) {
+      reserved += headerEl.offsetHeight;
+    }
+    if (statusStripEl) {
+      reserved += statusStripEl.offsetHeight;
+    }
+
+    const mainEl = chartSectionEl.parentElement;
+    if (mainEl) {
+      const mainStyle = window.getComputedStyle(mainEl);
+      reserved += parseFloat(mainStyle.paddingTop) || 0;
+      reserved += parseFloat(mainStyle.paddingBottom) || 0;
+
+      const children = Array.from(mainEl.children);
+      const rowGap = parseFloat(mainStyle.rowGap || mainStyle.gap || 0);
+      if (rowGap && children.length > 1) {
+        reserved += rowGap * (children.length - 1);
+      }
+      for (const child of children) {
+        if (child !== chartSectionEl) {
+          reserved += child.offsetHeight;
+        }
+      }
+    }
+
+    const sectionStyle = window.getComputedStyle(chartSectionEl);
+    const chartExtras =
+      (parseFloat(sectionStyle.paddingTop) || 0) +
+      (parseFloat(sectionStyle.paddingBottom) || 0) +
+      (parseFloat(sectionStyle.borderTopWidth) || 0) +
+      (parseFloat(sectionStyle.borderBottomWidth) || 0);
+
+    return viewportHeight - reserved - chartExtras;
+  }
+
+  function applyChartHeight() {
+    if (!chartSectionEl) {
+      return;
+    }
+    const available = computeChartContentHeight();
+    if (!Number.isFinite(available)) {
+      return;
+    }
+    const target = Math.max(MIN_CHART_CONTENT_HEIGHT, Math.min(available, MAX_CHART_CONTENT_HEIGHT));
+    const contentHeight = Math.round(target);
+    const currentHeight = parseFloat(chartSectionEl.style.height || 0);
+    if (Number.isFinite(currentHeight) && Math.abs(currentHeight - contentHeight) < 1) {
+      return;
+    }
+    chartSectionEl.style.height = `${contentHeight}px`;
+    chartSectionEl.style.minHeight = `${contentHeight}px`;
+    if (chart && chart.canvas) {
+      chart.canvas.style.height = '100%';
+      chart.canvas.style.minHeight = `${Math.max(180, contentHeight - 32)}px`;
+    }
+    chart.resize();
+  }
+
+  function scheduleChartHeightUpdate() {
+    if (pendingChartHeightFrame !== null) {
+      return;
+    }
+    pendingChartHeightFrame = requestAnimationFrame(() => {
+      pendingChartHeightFrame = null;
+      applyChartHeight();
+    });
+  }
+
+  scheduleChartHeightUpdate();
+  window.addEventListener('resize', scheduleChartHeightUpdate);
+
+  if (typeof ResizeObserver !== 'undefined') {
+    chartResizeObserver = new ResizeObserver(() => {
+      scheduleChartHeightUpdate();
+    });
+    [statsSectionEl, controlsSectionEl, headerEl, statusStripEl].forEach((el) => {
+      if (el) {
+        chartResizeObserver.observe(el);
+      }
+    });
+  }
+
   let ws = null;
   let reconnectDelay = 1000;
   let startEpochSec = null;
   const sensorSeries = Array.from({ length: MAX_SENSORS }, () => []);
   const setpointSeries = [];
-  const valveSeries = [];
 
   let sensorSelections = Array(MAX_SENSORS).fill(true);
   let renderedCheckboxCount = 0;
@@ -183,6 +264,7 @@
     } else {
       setLoggingStatus('off');
     }
+    scheduleChartHeightUpdate();
   }
 
   function ensureSensorSelections(count) {
@@ -281,17 +363,21 @@
     sensorCountEl.textContent = `Active: ${sensorCount}`;
     validCountEl.textContent = `Valid now: ${validNow} • Selected: ${selectedValid}`;
     validListEl.textContent = selectedLabels.length ? `Included sensors: ${selectedLabels.join(', ')}` : 'Included sensors: —';
-    avgTempEl.textContent = selectedValid ? `${(selectedSum / selectedValid).toFixed(2)} °C` : '—';
+    const avgValue = selectedValid ? selectedSum / selectedValid : NaN;
+    avgTempEl.textContent = Number.isFinite(avgValue) ? `${avgValue.toFixed(2)} °C` : '—';
+    if (latestSnapshot) {
+      latestSnapshot.avgSelected = Number.isFinite(avgValue) ? avgValue : null;
+      latestSnapshot.selectedValid = selectedValid;
+    }
+    scheduleChartHeightUpdate();
   }
 
   function setCommandStatus(text, tone = 'normal') {
+    if (!['alert', 'warn', 'error'].includes(tone)) {
+      return;
+    }
     commandStatusEl.textContent = text;
     commandStatusEl.dataset.tone = tone;
-    if (text) {
-      setTimeout(() => {
-        commandStatusEl.textContent = '';
-      }, 4000);
-    }
   }
 
   async function apiJson(path, options = {}) {
@@ -437,8 +523,6 @@
     setpointDataset.data = setpointSeries;
 
     const valve = Number.isFinite(data.valve) ? Number(data.valve) : 0;
-    pushSeries(valveSeries, { x: tMin, y: valve });
-    valveDataset.data = valveSeries;
 
     const valveOpen = Boolean(valve);
     valveStateEl.textContent = valveOpen ? 'OPEN' : 'CLOSED';
@@ -446,8 +530,14 @@
     valveStateEl.classList.toggle('valve-closed', !valveOpen);
 
     const modeChar = typeof data.mode === 'string' ? data.mode.charAt(0).toUpperCase() : 'A';
+    const hardwareAuto = modeChar === 'A';
+    if (hardwareAuto) {
+      clientAutoActive = true;
+    }
     const modeText =
-      modeChar === 'O'
+      clientAutoActive
+        ? 'AUTO'
+        : modeChar === 'O'
         ? 'FORCED OPEN'
         : modeChar === 'C'
         ? 'FORCED CLOSE'
@@ -461,6 +551,7 @@
       modeChar,
     };
     updateSensorStats();
+    maybeRunAutoValve(valveOpen, modeChar);
 
     if (serverLogInfo.active) {
       const currentRows = typeof serverLogInfo.rows === 'number' ? serverLogInfo.rows : 0;
@@ -484,18 +575,55 @@
     chart.update('none');
   }
 
-  async function sendCommand(cmd) {
+  async function sendCommand(cmd, options = {}) {
+    const { suppressStatus = false } = options;
     try {
-      setCommandStatus(`Sending "${cmd}"…`, 'info');
+      if (!suppressStatus) {
+        setCommandStatus(`Sending "${cmd}"…`, 'info');
+      }
       await apiJson('/api/command', {
         method: 'POST',
         body: JSON.stringify({ cmd }),
       });
-      setCommandStatus(`Command "${cmd}" sent`, 'success');
     } catch (err) {
       console.error('Command error', err);
       setCommandStatus(`Command failed: ${err.message}`, 'error');
     }
+  }
+
+  // Auto mode: drive the physical valve based on the selected sensor average.
+  function maybeRunAutoValve(valveOpen, modeChar) {
+    const autoEnabled = clientAutoActive || modeChar === 'A';
+    if (!autoEnabled) {
+      autoValveDesiredState = null;
+      return;
+    }
+    clientAutoActive = true;
+    if (!latestSnapshot || typeof latestSnapshot.avgSelected !== 'number') {
+      return;
+    }
+    const selectedValid =
+      typeof latestSnapshot.selectedValid === 'number' ? latestSnapshot.selectedValid : 0;
+    if (selectedValid <= 0) {
+      autoValveDesiredState = null;
+      return;
+    }
+    const avg = latestSnapshot.avgSelected;
+    if (!Number.isFinite(avg)) {
+      return;
+    }
+    const shouldOpen = avg > currentSetpoint;
+    if (shouldOpen === valveOpen) {
+      autoValveDesiredState = shouldOpen;
+      return;
+    }
+    const now = Date.now();
+    if (autoValveDesiredState === shouldOpen && now - autoValveLastCommandTs < AUTO_COMMAND_COOLDOWN_MS) {
+      return;
+    }
+    autoValveDesiredState = shouldOpen;
+    autoValveLastCommandTs = now;
+    sendCommand(shouldOpen ? 'VALVE OPEN' : 'VALVE CLOSE', { suppressStatus: true }).catch(() => {});
   }
 
   async function startLogging() {
@@ -634,9 +762,17 @@
   document.querySelectorAll('button[data-cmd]').forEach((btn) => {
     btn.addEventListener('click', (event) => {
       const cmd = event.currentTarget.getAttribute('data-cmd');
-      if (cmd) {
-        sendCommand(cmd);
+      if (!cmd) {
+        return;
       }
+      if (cmd === 'VALVE AUTO') {
+        clientAutoActive = true;
+        autoValveDesiredState = null;
+      } else if (cmd === 'VALVE OPEN' || cmd === 'VALVE CLOSE') {
+        clientAutoActive = false;
+        autoValveDesiredState = null;
+      }
+      sendCommand(cmd);
     });
   });
 
