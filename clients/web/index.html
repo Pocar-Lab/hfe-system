@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>TC Monitor (Web UI)</title>
+    <title>Cryogenic HX Monitor</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="stylesheet" href="styles.css" />
     <meta name="color-scheme" content="dark light" />
@@ -11,13 +11,14 @@
   </head>
   <body>
     <header>
-      <h1>TC Monitor (Web)</h1>
-      <div id="status-bar">
-        <span id="connection-status">Status: initializing…</span>
-        <span id="logging-status">Logging: off</span>
-        <span id="command-status"></span>
-      </div>
+      <h1>Cryogenic HX Monitor</h1>
     </header>
+
+    <div id="status-strip">
+      <span id="connection-status" class="status-chip">Status: initializing…</span>
+      <span id="logging-status" class="status-chip">Logging: off</span>
+      <span id="command-status" class="status-chip"></span>
+    </div>
 
     <main>
       <section id="chart-section">
@@ -29,29 +30,34 @@
           <h2>Valve</h2>
           <p id="valve-state" class="valve-closed">CLOSED</p>
           <p id="mode-state">Mode: —</p>
-        </div>
-        <div class="stat-card">
-          <h2>Sensors</h2>
-          <p id="sensor-count">Active: —</p>
-          <p id="valid-count">Valid now: —</p>
-          <p id="valid-list" class="muted">Valid sensors: —</p>
-        </div>
-        <div class="stat-card">
-          <h2>Average (valid)</h2>
-          <p id="avg-temp">—</p>
-        </div>
-      </section>
-
-      <section id="controls-section">
-        <div class="control-group">
-          <h2>Valve Override</h2>
-          <div class="button-row">
+          <div class="button-row compact">
             <button data-cmd="VALVE OPEN" class="primary">Open</button>
             <button data-cmd="VALVE CLOSE" class="primary">Close</button>
             <button data-cmd="VALVE AUTO">Auto</button>
           </div>
         </div>
+        <div class="stat-card">
+          <h2>Sensors</h2>
+          <p id="sensor-count">Active: —</p>
+          <p id="valid-count">Valid now: —</p>
+          <p id="valid-list" class="muted">Included sensors: —</p>
+          <div id="sensor-values" class="sensor-values-grid">
+            <p class="muted">No telemetry yet.</p>
+          </div>
+        </div>
+        <div class="stat-card">
+          <h2>Average (selected)</h2>
+          <p id="avg-temp">—</p>
+          <div id="sensor-selection" class="avg-selection">
+            <p class="muted">Sensors included in average:</p>
+            <div id="sensor-checkboxes" class="chip-grid">
+              <p class="muted">Awaiting telemetry…</p>
+            </div>
+          </div>
+        </div>
+      </section>
 
+      <section id="controls-section">
         <div class="control-group">
           <h2>Logging</h2>
           <div class="button-row">
@@ -59,6 +65,26 @@
             <button id="stop-logging" disabled>Stop &amp; Download</button>
             <button id="clear-logging" disabled>Clear Buffer</button>
           </div>
+        </div>
+
+        <div class="control-group">
+          <h2>Setpoint</h2>
+          <form id="setpoint-form" class="form-row">
+            <label>
+              Setpoint (°C)
+              <input type="number" id="setpoint-input" step="0.1" inputmode="decimal" value="25.0" />
+            </label>
+            <label>
+              Hysteresis (°C)
+              <input type="number" id="hysteresis-input" step="0.1" inputmode="decimal" value="0.5" />
+            </label>
+            <label>
+              Telemetry interval (ms)
+              <input type="number" id="telemetry-input" step="100" inputmode="numeric" value="1000" />
+              <span class="form-hint">How often the controller sends telemetry (in milliseconds).</span>
+            </label>
+            <button type="submit" class="primary">Apply</button>
+          </form>
         </div>
       </section>
     </main>

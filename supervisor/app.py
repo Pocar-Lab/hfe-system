@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import os
+import csv
 import json
 import math
 import asyncio
 import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Optional
 
 import yaml
@@ -18,6 +20,7 @@ from fastapi import (
     HTTPException,
     Header,
     Query,
+    Body,
 )
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -130,6 +133,131 @@ def parse_serial_payload(raw: bytes) -> Optional[dict]:
 
 DETECT_ZERO_AS_NC = True
 
+MAX_LOG_SENSORS = 10
+RAW_LOG_DIR = REPO / "data" / "raw"
+
+
+def _init_logging_state(state) -> None:
+    state.log_enabled = False
+    state.log_path = None
+    state.log_file = None
+    state.log_writer = None
+    state.log_rows = 0
+
+
+def _sanitize_filename(name: str) -> str:
+    candidate = Path(name).name.strip()
+    candidate = candidate.replace(" ", "_")
+    allowed = "".join(c for c in candidate if c.isalnum() or c in {"-", "_", "."})
+    if not allowed:
+        raise ValueError("Invalid filename")
+    if not allowed.lower().endswith(".csv"):
+        allowed += ".csv"
+    if allowed.startswith("."):
+        raise ValueError("Invalid filename")
+    return allowed
+
+
+def _logging_status(state) -> dict:
+    path = getattr(state, "log_path", None)
+    return {
+        "ok": True,
+        "active": bool(getattr(state, "log_enabled", False)),
+        "path": str(path) if isinstance(path, Path) else None,
+        "filename": path.name if isinstance(path, Path) else None,
+        "rows": int(getattr(state, "log_rows", 0) or 0),
+    }
+
+
+def _start_logging(state, filename: Optional[str] = None) -> dict:
+    if getattr(state, "log_enabled", False):
+        raise RuntimeError("Logging already active")
+    RAW_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    if filename:
+        safe_name = _sanitize_filename(filename)
+    else:
+        safe_name = f"tc_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    path = RAW_LOG_DIR / safe_name
+    fh = path.open("w", newline="", encoding="utf-8")
+    writer = csv.writer(fh)
+    header = ["time_s"] + [f"temp{i}_C" for i in range(MAX_LOG_SENSORS)] + ["valve", "mode"]
+    writer.writerow(header)
+    fh.flush()
+    state.log_enabled = True
+    state.log_path = path
+    state.log_file = fh
+    state.log_writer = writer
+    state.log_rows = 0
+    return _logging_status(state)
+
+
+def _stop_logging(state, *, cleanup: bool = False) -> Optional[dict]:
+    if not getattr(state, "log_enabled", False):
+        return None if cleanup else {"ok": False, "detail": "logging inactive"}
+    fh = getattr(state, "log_file", None)
+    path = getattr(state, "log_path", None)
+    rows = getattr(state, "log_rows", 0)
+    if fh:
+        try:
+            fh.flush()
+            fh.close()
+        except Exception:
+            pass
+    state.log_enabled = False
+    state.log_file = None
+    state.log_writer = None
+    state.log_path = None
+    state.log_rows = 0
+    result = {
+        "ok": True,
+        "path": str(path) if path else None,
+        "filename": path.name if isinstance(path, Path) else None,
+        "rows": rows,
+        "active": False,
+    }
+    return None if cleanup else result
+
+
+def _maybe_log_telemetry(state, payload: dict) -> None:
+    if not getattr(state, "log_enabled", False):
+        return
+    writer = getattr(state, "log_writer", None)
+    fh = getattr(state, "log_file", None)
+    if writer is None or fh is None:
+        return
+    if not isinstance(payload, dict) or payload.get("type") != "telemetry":
+        return
+
+    temps = payload.get("temps") or []
+    if not isinstance(temps, list):
+        temps = []
+
+    row: list[str] = []
+    t_val = payload.get("t")
+    if isinstance(t_val, (int, float)) and math.isfinite(float(t_val)):
+        row.append(f"{float(t_val):.3f}")
+    else:
+        row.append("")
+
+    for idx in range(MAX_LOG_SENSORS):
+        value = temps[idx] if idx < len(temps) else None
+        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+            row.append(f"{float(value):.2f}")
+        else:
+            row.append("nan")
+
+    valve = payload.get("valve")
+    row.append(str(int(valve)) if isinstance(valve, (int, float)) else "0")
+    mode = payload.get("mode") or ""
+    row.append(str(mode)[:1])
+
+    try:
+        writer.writerow(row)
+        fh.flush()
+        state.log_rows = getattr(state, "log_rows", 0) + 1
+    except Exception:
+        pass
+
 # ───────────────────── optional serial support ─────────────────
 try:
     import serial_asyncio  # provided by pyserial-asyncio
@@ -156,11 +284,13 @@ async def lifespan(app: FastAPI):
     app.state.q_live: asyncio.Queue = asyncio.Queue(maxsize=10000)
     app.state.tasks: list[asyncio.Task] = []
     app.state.ser_transport = None
+    _init_logging_state(app.state)
 
     async def broadcaster():
         """Fan-out any message placed on q_live to all connected WS clients."""
         while True:
             msg = await app.state.q_live.get()
+            _maybe_log_telemetry(app.state, msg)
             dead: list[WebSocket] = []
             # Broadcast to clients
             for ws in list(clients):
@@ -239,6 +369,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         # Shutdown
+        _stop_logging(app.state, cleanup=True)
         for t in app.state.tasks:
             t.cancel()
         await asyncio.gather(*app.state.tasks, return_exceptions=True)
@@ -290,6 +421,37 @@ async def api_command(body: dict, authorization: Optional[str] = Header(default=
     else:
         # No serial available; return 503 but echo the command for debugging
         return JSONResponse({"ok": False, "echo": body, "detail": "serial unavailable"}, status_code=503)
+
+
+@app.get("/api/logging/status")
+async def api_logging_status(authorization: Optional[str] = Header(default=None)):
+    require_auth(authorization)
+    return _logging_status(app.state)
+
+
+@app.post("/api/logging/start")
+async def api_logging_start(
+    body: dict = Body(default_factory=dict),
+    authorization: Optional[str] = Header(default=None),
+):
+    require_auth(authorization)
+    filename = ""
+    if isinstance(body, dict):
+        filename = str(body.get("filename") or "").strip()
+    try:
+        status = _start_logging(app.state, filename or None)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return status
+
+
+@app.post("/api/logging/stop")
+async def api_logging_stop(authorization: Optional[str] = Header(default=None)):
+    require_auth(authorization)
+    result = _stop_logging(app.state)
+    return result or {"ok": False, "detail": "logging inactive"}
 
 
 # WebSocket endpoint. Use /ws?token=XYZ  (token optional if AUTH_TOKEN empty)
