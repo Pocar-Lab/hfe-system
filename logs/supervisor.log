@@ -1,113 +1,35 @@
 INFO: Auth required: False; token prefix: (none)
-INFO:     Started server process [190259]
+INFO:     Started server process [340183]
 INFO:     Waiting for application startup.
 INFO: Serial connected: /dev/ttyACM0 @ 115200
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-INFO:     ('127.0.0.1', 46478) - "WebSocket /ws" [accepted]
+INFO:     ('127.0.0.1', 33172) - "WebSocket /ws" [accepted]
 INFO:     connection open
 INFO:     connection closed
-INFO:     127.0.0.1:46480 - "GET /api/logging/status HTTP/1.1" 200 OK
-INFO:     ('127.0.0.1', 46490) - "WebSocket /ws" [accepted]
+INFO:     127.0.0.1:33184 - "GET /ui/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33184 - "GET /ui/app.js HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:33184 - "GET /api/logging/status HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 44300) - "WebSocket /ws" [accepted]
 INFO:     connection open
-INFO:     127.0.0.1:44518 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:32880 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:40060 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:37588 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:37588 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:37588 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:34492 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:34492 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:34492 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:34492 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:57108 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:39306 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49714 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49714 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:39590 - "POST /api/logging/start HTTP/1.1" 200 OK
-INFO:     127.0.0.1:37880 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:37880 - "POST /api/logging/stop HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50388 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50388 - "POST /api/command HTTP/1.1" 200 OK
 INFO:     connection closed
-INFO:     127.0.0.1:56794 - "GET /ui/ HTTP/1.1" 200 OK
-INFO:     127.0.0.1:56794 - "GET /ui/styles.css HTTP/1.1" 304 Not Modified
-INFO:     127.0.0.1:56798 - "GET /ui/app.js HTTP/1.1" 200 OK
-INFO:     127.0.0.1:56794 - "GET /api/logging/status HTTP/1.1" 200 OK
-INFO:     ('127.0.0.1', 56800) - "WebSocket /ws" [accepted]
+INFO:     127.0.0.1:53848 - "GET /ui/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53848 - "GET /api/logging/status HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 53854) - "WebSocket /ws" [accepted]
 INFO:     connection open
-INFO:     127.0.0.1:56804 - "POST /api/logging/start HTTP/1.1" 200 OK
-INFO:     127.0.0.1:56804 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:37732 - "POST /api/logging/stop HTTP/1.1" 200 OK
-INFO:     127.0.0.1:41858 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:41858 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50342 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:46890 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:55578 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:45208 - "POST /api/logging/start HTTP/1.1" 200 OK
-INFO:     127.0.0.1:35778 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:33178 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:34998 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:37338 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53870 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:42798 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:52484 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:47456 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:48158 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:33322 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50074 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:41232 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:40764 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:34216 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:54008 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:51218 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58024 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:44164 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:35710 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:57804 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:33232 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:57952 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53188 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:42554 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:45248 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:34368 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:36988 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:54658 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58830 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50674 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50278 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:43470 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:47492 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:39546 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60874 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:52478 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:39788 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:34894 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53712 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:36022 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:38038 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:47626 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:47810 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:48024 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:48024 - "POST /api/logging/stop HTTP/1.1" 200 OK
-INFO:     127.0.0.1:48024 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:48024 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58386 - "POST /api/logging/start HTTP/1.1" 200 OK
-INFO:     127.0.0.1:56674 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:42490 - "POST /api/logging/stop HTTP/1.1" 200 OK
-INFO:     127.0.0.1:39084 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49344 - "POST /api/logging/start HTTP/1.1" 200 OK
-INFO:     127.0.0.1:48962 - "POST /api/logging/stop HTTP/1.1" 200 OK
-INFO:     127.0.0.1:34690 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:34690 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50326 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50326 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50326 - "POST /api/command HTTP/1.1" 200 OK
-INFO:     127.0.0.1:44276 - "POST /api/command HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42482 - "POST /api/command HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42482 - "POST /api/command HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45758 - "POST /api/command HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43892 - "POST /api/command HTTP/1.1" 200 OK
 INFO:     connection closed
-INFO:     127.0.0.1:33396 - "GET /ui/ HTTP/1.1" 200 OK
-INFO:     127.0.0.1:33396 - "GET /ui/styles.css HTTP/1.1" 304 Not Modified
-INFO:     127.0.0.1:33398 - "GET /ui/app.js HTTP/1.1" 304 Not Modified
-INFO:     127.0.0.1:33396 - "GET /api/logging/status HTTP/1.1" 200 OK
-INFO:     ('127.0.0.1', 33402) - "WebSocket /ws" [accepted]
+INFO:     127.0.0.1:54604 - "GET /ui/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54604 - "GET /api/logging/status HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 54610) - "WebSocket /ws" [accepted]
 INFO:     connection open
+INFO:     127.0.0.1:41364 - "POST /api/logging/start HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41364 - "POST /api/command HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41612 - "POST /api/command HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56028 - "POST /api/logging/stop HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57022 - "POST /api/command HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46730 - "POST /api/command HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46730 - "POST /api/command HTTP/1.1" 200 OK

@@ -578,14 +578,14 @@
     const modeCharRaw = typeof data.mode === 'string' ? data.mode : '';
     const modeChar = modeCharRaw ? modeCharRaw.charAt(0).toUpperCase() : '';
     let modeText;
-    if (modeChar === 'A') {
+    if (clientAutoActive) {
+      modeText = 'AUTO';
+    } else if (modeChar === 'A') {
       modeText = 'AUTO';
     } else if (modeChar === 'O') {
       modeText = 'FORCED OPEN';
     } else if (modeChar === 'C') {
       modeText = 'FORCED CLOSE';
-    } else if (clientAutoActive) {
-      modeText = 'AUTO';
     } else {
       modeText = '—';
     }
