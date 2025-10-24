@@ -31,8 +31,6 @@
   const setpointInput = document.getElementById('setpoint-input');
   const hysteresisInput = document.getElementById('hysteresis-input');
   const telemetryInput = document.getElementById('telemetry-input');
-  const yMinInput = document.getElementById('ymin-input');
-  const yMaxInput = document.getElementById('ymax-input');
   const sensorCheckboxesEl = document.getElementById('sensor-checkboxes');
   const chartSectionEl = document.getElementById('chart-section');
   const statsSectionEl = document.getElementById('stats-section');
@@ -71,6 +69,7 @@
   }));
 
   let currentSetpoint = SETPOINT;
+  let currentHysteresis = 0.5;
 
   function setpointLabel() {
     return `Set-point (${currentSetpoint.toFixed(1)} °C)`;
@@ -86,12 +85,6 @@
     spanGaps: true,
     data: [],
   };
-
-  const DEFAULT_Y_AXIS_MIN = -170;
-  const DEFAULT_Y_AXIS_MAX = 25;
-
-  let yAxisMin = DEFAULT_Y_AXIS_MIN;
-  let yAxisMax = DEFAULT_Y_AXIS_MAX;
 
   const chart = new Chart(ctx, {
     type: 'line',
@@ -118,8 +111,8 @@
         },
         y: {
           title: { display: true, text: 'Temperature (°C)' },
-          min: yAxisMin,
-          max: yAxisMax,
+          suggestedMin: -170,
+          suggestedMax: 25,
           ticks: { color: tickColor },
           grid: { color: gridColor },
         },
@@ -134,8 +127,8 @@
     },
   });
 
-  const MIN_CHART_CONTENT_HEIGHT = 260;
-  const MAX_CHART_CONTENT_HEIGHT = 760;
+  const MIN_CHART_CONTENT_HEIGHT = 300;
+  const MAX_CHART_CONTENT_HEIGHT = 900;
   const AUTO_COMMAND_COOLDOWN_MS = 1500;
   let pendingChartHeightFrame = null;
   let chartResizeObserver = null;
@@ -532,63 +525,9 @@
     setpointDataset.data = setpointSeries;
   }
 
-  function applyYAxisLimits() {
-    if (!chart || !chart.options || !chart.options.scales || !chart.options.scales.y) {
-      return;
-    }
-    chart.options.scales.y.min = yAxisMin;
-    chart.options.scales.y.max = yAxisMax;
-    chart.options.scales.y.suggestedMin = yAxisMin;
-    chart.options.scales.y.suggestedMax = yAxisMax;
-    if (chart.scales && chart.scales.y) {
-      const yScale = chart.scales.y;
-      yScale.options.min = yAxisMin;
-      yScale.options.max = yAxisMax;
-      yScale.min = yAxisMin;
-      yScale.max = yAxisMax;
-    }
-  }
-
-  function parseYAxisInputs() {
-    if (!yMinInput || !yMaxInput) {
-      return null;
-    }
-    const minVal = parseFloat(yMinInput.value);
-    const maxVal = parseFloat(yMaxInput.value);
-    if (!Number.isFinite(minVal) || !Number.isFinite(maxVal)) {
-      return null;
-    }
-    if (minVal >= maxVal) {
-      return null;
-    }
-    return { minVal, maxVal };
-  }
-
-  function updateYAxisFromInputs(showError = false) {
-    const parsed = parseYAxisInputs();
-    if (!parsed) {
-      if (showError) {
-        setCommandStatus('Invalid chart y-axis limits', 'error');
-      }
-      return false;
-    }
-    yAxisMin = parsed.minVal;
-    yAxisMax = parsed.maxVal;
-    if (yMinInput) {
-      yMinInput.value = yAxisMin.toFixed(1);
-    }
-    if (yMaxInput) {
-      yMaxInput.value = yAxisMax.toFixed(1);
-    }
-    applyYAxisLimits();
-    chart.update('none');
-    return true;
-  }
-
   function updateChartRanges() {
     chart.options.scales.x.min = 0;
     chart.options.scales.x.max = WINDOW_MINUTES;
-    applyYAxisLimits();
   }
 
   function handleTelemetry(data) {
@@ -636,19 +575,20 @@
     valveStateEl.classList.toggle('valve-open', valveOpen);
     valveStateEl.classList.toggle('valve-closed', !valveOpen);
 
-    const modeChar = typeof data.mode === 'string' ? data.mode.charAt(0).toUpperCase() : 'A';
-    const hardwareAuto = modeChar === 'A';
-    if (hardwareAuto) {
-      clientAutoActive = true;
+    const modeCharRaw = typeof data.mode === 'string' ? data.mode : '';
+    const modeChar = modeCharRaw ? modeCharRaw.charAt(0).toUpperCase() : '';
+    let modeText;
+    if (modeChar === 'A') {
+      modeText = 'AUTO';
+    } else if (modeChar === 'O') {
+      modeText = 'FORCED OPEN';
+    } else if (modeChar === 'C') {
+      modeText = 'FORCED CLOSE';
+    } else if (clientAutoActive) {
+      modeText = 'AUTO';
+    } else {
+      modeText = '—';
     }
-    const modeText =
-      clientAutoActive
-        ? 'AUTO'
-        : modeChar === 'O'
-        ? 'FORCED OPEN'
-        : modeChar === 'C'
-        ? 'FORCED CLOSE'
-        : 'AUTO';
     modeStateEl.textContent = `Mode: ${modeText}`;
 
     latestSnapshot = {
@@ -658,7 +598,7 @@
       modeChar,
     };
     updateSensorStats();
-    maybeRunAutoValve(valveOpen, modeChar);
+    maybeRunAutoValve(valveOpen);
 
     if (serverLogInfo.active) {
       const currentRows = typeof serverLogInfo.rows === 'number' ? serverLogInfo.rows : 0;
@@ -699,13 +639,11 @@
   }
 
   // Auto mode: drive the physical valve based on the selected sensor average.
-  function maybeRunAutoValve(valveOpen, modeChar) {
-    const autoEnabled = clientAutoActive || modeChar === 'A';
-    if (!autoEnabled) {
+  function maybeRunAutoValve(valveOpen) {
+    if (!clientAutoActive) {
       autoValveDesiredState = null;
       return;
     }
-    clientAutoActive = true;
     if (!latestSnapshot || typeof latestSnapshot.avgSelected !== 'number') {
       return;
     }
@@ -719,18 +657,40 @@
     if (!Number.isFinite(avg)) {
       return;
     }
-    const shouldOpen = avg > currentSetpoint;
-    if (shouldOpen === valveOpen) {
-      autoValveDesiredState = shouldOpen;
+    const hysteresis =
+      Number.isFinite(currentHysteresis) && currentHysteresis > 0 ? currentHysteresis : 0;
+    const upperThreshold = currentSetpoint + hysteresis;
+    const lowerThreshold = currentSetpoint - hysteresis;
+
+    let desiredState = autoValveDesiredState;
+    if (desiredState === null) {
+      desiredState = valveOpen;
+    }
+
+    if (!valveOpen && avg > upperThreshold) {
+      desiredState = true;
+    } else if (valveOpen && avg < lowerThreshold) {
+      desiredState = false;
+    } else {
+      autoValveDesiredState = desiredState;
+      return;
+    }
+    if (desiredState === valveOpen) {
+      autoValveDesiredState = desiredState;
       return;
     }
     const now = Date.now();
-    if (autoValveDesiredState === shouldOpen && now - autoValveLastCommandTs < AUTO_COMMAND_COOLDOWN_MS) {
+    if (
+      autoValveDesiredState === desiredState &&
+      now - autoValveLastCommandTs < AUTO_COMMAND_COOLDOWN_MS
+    ) {
       return;
     }
-    autoValveDesiredState = shouldOpen;
+    autoValveDesiredState = desiredState;
     autoValveLastCommandTs = now;
-    sendCommand(shouldOpen ? 'VALVE OPEN' : 'VALVE CLOSE', { suppressStatus: true }).catch(() => {});
+    sendCommand(desiredState ? 'VALVE OPEN' : 'VALVE CLOSE', { suppressStatus: true }).catch(
+      () => {},
+    );
   }
 
   async function startLogging() {
@@ -899,10 +859,6 @@
       const hysteresis = hysteresisInput ? parseFloat(hysteresisInput.value) : NaN;
       const telemetryMs = telemetryInput ? parseInt(telemetryInput.value, 10) : NaN;
 
-      if (!updateYAxisFromInputs(true)) {
-        return;
-      }
-
       const payload = {
         id: 'set_control',
         setpoint_C: setpoint,
@@ -917,6 +873,7 @@
           body: JSON.stringify(payload),
         });
         currentSetpoint = payload.setpoint_C;
+        currentHysteresis = payload.hysteresis_C;
         setpointSeries.length = 0;
         setpointDataset.data = setpointSeries;
         setpointDataset.label = setpointLabel();
@@ -958,32 +915,13 @@
   }
   if (hysteresisInput) {
     const initialH = parseFloat(hysteresisInput.value);
-    hysteresisInput.value = Number.isFinite(initialH) ? initialH.toFixed(2) : '0.50';
+    const safeH = Number.isFinite(initialH) ? initialH : 0.5;
+    hysteresisInput.value = safeH.toFixed(2);
+    currentHysteresis = safeH;
   }
   if (telemetryInput && (!telemetryInput.value || Number(telemetryInput.value) <= 0)) {
     telemetryInput.value = '1000';
   }
-
-  if (yMinInput) {
-    yMinInput.value = yAxisMin.toFixed(1);
-    const syncYAxis = () => {
-      updateYAxisFromInputs(false);
-    };
-    yMinInput.addEventListener('input', syncYAxis);
-    yMinInput.addEventListener('change', syncYAxis);
-    yMinInput.addEventListener('blur', syncYAxis);
-  }
-  if (yMaxInput) {
-    yMaxInput.value = yAxisMax.toFixed(1);
-    const syncYAxis = () => {
-      updateYAxisFromInputs(false);
-    };
-    yMaxInput.addEventListener('input', syncYAxis);
-    yMaxInput.addEventListener('change', syncYAxis);
-    yMaxInput.addEventListener('blur', syncYAxis);
-  }
-
-  applyYAxisLimits();
 
   renderSensorCheckboxes(0);
 

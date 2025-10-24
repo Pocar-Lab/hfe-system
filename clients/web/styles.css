@@ -214,6 +214,17 @@ main {
   min-width: 120px;
 }
 
+.form-actions {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-width: 120px;
+}
+
+.form-actions button {
+  width: 100%;
+}
+
 .form-row input {
   margin-top: 4px;
   padding: 8px 10px;

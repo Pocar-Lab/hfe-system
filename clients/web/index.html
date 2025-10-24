@@ -68,22 +68,26 @@
         </div>
 
         <div class="control-group">
-          <h2>Setpoint</h2>
+          <h2>Control Targets</h2>
           <form id="setpoint-form" class="form-row">
             <label>
               Setpoint (°C)
               <input type="number" id="setpoint-input" step="0.1" inputmode="decimal" value="25.0" />
+              <span class="form-hint">Desired temperature the controller tries to maintain.</span>
             </label>
             <label>
               Hysteresis (°C)
               <input type="number" id="hysteresis-input" step="0.1" inputmode="decimal" value="0.5" />
+              <span class="form-hint">Temperature band around the setpoint before the valve flips.</span>
             </label>
             <label>
               Telemetry interval (ms)
               <input type="number" id="telemetry-input" step="100" inputmode="numeric" value="1000" />
               <span class="form-hint">How often the controller sends telemetry (in milliseconds).</span>
             </label>
-            <button type="submit" class="primary">Apply</button>
+            <div class="form-actions">
+              <button type="submit" class="primary">Apply</button>
+            </div>
           </form>
         </div>
       </section>
