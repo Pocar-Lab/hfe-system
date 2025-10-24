@@ -202,7 +202,7 @@ main {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
-  align-items: flex-end;
+  align-items: flex-start;
   margin-bottom: 12px;
 }
 
@@ -227,6 +227,7 @@ main {
   margin-top: 4px;
   font-size: 0.8rem;
   color: var(--text-secondary);
+  max-width: 220px;
 }
 
 .form-row input:focus {

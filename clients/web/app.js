@@ -31,6 +31,8 @@
   const setpointInput = document.getElementById('setpoint-input');
   const hysteresisInput = document.getElementById('hysteresis-input');
   const telemetryInput = document.getElementById('telemetry-input');
+  const yMinInput = document.getElementById('ymin-input');
+  const yMaxInput = document.getElementById('ymax-input');
   const sensorCheckboxesEl = document.getElementById('sensor-checkboxes');
   const chartSectionEl = document.getElementById('chart-section');
   const statsSectionEl = document.getElementById('stats-section');
@@ -85,6 +87,12 @@
     data: [],
   };
 
+  const DEFAULT_Y_AXIS_MIN = -170;
+  const DEFAULT_Y_AXIS_MAX = 25;
+
+  let yAxisMin = DEFAULT_Y_AXIS_MIN;
+  let yAxisMax = DEFAULT_Y_AXIS_MAX;
+
   const chart = new Chart(ctx, {
     type: 'line',
     data: {
@@ -110,8 +118,8 @@
         },
         y: {
           title: { display: true, text: 'Temperature (°C)' },
-          suggestedMin: -170,
-          suggestedMax: 25,
+          min: yAxisMin,
+          max: yAxisMax,
           ticks: { color: tickColor },
           grid: { color: gridColor },
         },
@@ -486,9 +494,101 @@
     }
   }
 
+  function shiftSeriesLeft(series, deltaMinutes) {
+    if (!Array.isArray(series) || !Number.isFinite(deltaMinutes) || deltaMinutes <= 0) {
+      return;
+    }
+    for (const point of series) {
+      if (point && typeof point.x === 'number') {
+        point.x -= deltaMinutes;
+      }
+    }
+    let removeCount = 0;
+    for (let i = 0; i < series.length; i += 1) {
+      const point = series[i];
+      if (!point || typeof point.x !== 'number') {
+        continue;
+      }
+      if (point.x < 0) {
+        removeCount += 1;
+      } else {
+        break;
+      }
+    }
+    if (removeCount > 0) {
+      series.splice(0, removeCount);
+    }
+  }
+
+  function shiftAllSeriesLeft(deltaMinutes) {
+    if (!Number.isFinite(deltaMinutes) || deltaMinutes <= 0) {
+      return;
+    }
+    for (let i = 0; i < sensorSeries.length; i += 1) {
+      shiftSeriesLeft(sensorSeries[i], deltaMinutes);
+      sensorDatasets[i].data = sensorSeries[i];
+    }
+    shiftSeriesLeft(setpointSeries, deltaMinutes);
+    setpointDataset.data = setpointSeries;
+  }
+
+  function applyYAxisLimits() {
+    if (!chart || !chart.options || !chart.options.scales || !chart.options.scales.y) {
+      return;
+    }
+    chart.options.scales.y.min = yAxisMin;
+    chart.options.scales.y.max = yAxisMax;
+    chart.options.scales.y.suggestedMin = yAxisMin;
+    chart.options.scales.y.suggestedMax = yAxisMax;
+    if (chart.scales && chart.scales.y) {
+      const yScale = chart.scales.y;
+      yScale.options.min = yAxisMin;
+      yScale.options.max = yAxisMax;
+      yScale.min = yAxisMin;
+      yScale.max = yAxisMax;
+    }
+  }
+
+  function parseYAxisInputs() {
+    if (!yMinInput || !yMaxInput) {
+      return null;
+    }
+    const minVal = parseFloat(yMinInput.value);
+    const maxVal = parseFloat(yMaxInput.value);
+    if (!Number.isFinite(minVal) || !Number.isFinite(maxVal)) {
+      return null;
+    }
+    if (minVal >= maxVal) {
+      return null;
+    }
+    return { minVal, maxVal };
+  }
+
+  function updateYAxisFromInputs(showError = false) {
+    const parsed = parseYAxisInputs();
+    if (!parsed) {
+      if (showError) {
+        setCommandStatus('Invalid chart y-axis limits', 'error');
+      }
+      return false;
+    }
+    yAxisMin = parsed.minVal;
+    yAxisMax = parsed.maxVal;
+    if (yMinInput) {
+      yMinInput.value = yAxisMin.toFixed(1);
+    }
+    if (yMaxInput) {
+      yMaxInput.value = yAxisMax.toFixed(1);
+    }
+    applyYAxisLimits();
+    chart.update('none');
+    return true;
+  }
+
   function updateChartRanges() {
     chart.options.scales.x.min = 0;
     chart.options.scales.x.max = WINDOW_MINUTES;
+    applyYAxisLimits();
   }
 
   function handleTelemetry(data) {
@@ -510,7 +610,7 @@
     if (startEpochSec === null) {
       startEpochSec = ts;
     }
-    const tMin = (ts - startEpochSec) / 60;
+    let tMin = (ts - startEpochSec) / 60;
 
     for (let i = 0; i < MAX_SENSORS; i += 1) {
       const value = Number.isFinite(temps[i]) ? temps[i] : null;
@@ -521,6 +621,13 @@
 
     pushSeries(setpointSeries, { x: tMin, y: currentSetpoint });
     setpointDataset.data = setpointSeries;
+
+    if (tMin > WINDOW_MINUTES) {
+      const overflow = tMin - WINDOW_MINUTES;
+      shiftAllSeriesLeft(overflow);
+      startEpochSec += overflow * 60;
+      tMin -= overflow;
+    }
 
     const valve = Number.isFinite(data.valve) ? Number(data.valve) : 0;
 
@@ -782,42 +889,50 @@
       if (!setpointInput) {
         return;
       }
+
       const setpoint = parseFloat(setpointInput.value);
       if (!Number.isFinite(setpoint)) {
         setCommandStatus('Invalid setpoint value', 'error');
         return;
       }
+
       const hysteresis = hysteresisInput ? parseFloat(hysteresisInput.value) : NaN;
       const telemetryMs = telemetryInput ? parseInt(telemetryInput.value, 10) : NaN;
-    const payload = {
-      id: 'set_control',
-      setpoint_C: setpoint,
-      hysteresis_C: Number.isFinite(hysteresis) ? hysteresis : 0.5,
-      telemetry_ms: Number.isFinite(telemetryMs) ? Math.max(100, telemetryMs) : 1000,
-    };
-    try {
-      setCommandStatus('Updating setpoint…', 'info');
-      await apiJson('/api/command', {
-        method: 'POST',
-        body: JSON.stringify(payload),
-      });
-      currentSetpoint = payload.setpoint_C;
-      setpointSeries.length = 0;
-      setpointDataset.data = setpointSeries;
-      setpointDataset.label = setpointLabel();
-      if (setpointInput) {
-        setpointInput.value = payload.setpoint_C.toFixed(2);
+
+      if (!updateYAxisFromInputs(true)) {
+        return;
       }
-      if (hysteresisInput) {
-        hysteresisInput.value = payload.hysteresis_C.toFixed(2);
-      }
-      if (telemetryInput) {
-        telemetryInput.value = String(payload.telemetry_ms);
-      }
-      if (latestSnapshot) {
-        updateSensorStats();
-      }
-      chart.update('none');
+
+      const payload = {
+        id: 'set_control',
+        setpoint_C: setpoint,
+        hysteresis_C: Number.isFinite(hysteresis) ? hysteresis : 0.5,
+        telemetry_ms: Number.isFinite(telemetryMs) ? Math.max(100, telemetryMs) : 1000,
+      };
+
+      try {
+        setCommandStatus('Updating setpoint…', 'info');
+        await apiJson('/api/command', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+        currentSetpoint = payload.setpoint_C;
+        setpointSeries.length = 0;
+        setpointDataset.data = setpointSeries;
+        setpointDataset.label = setpointLabel();
+        if (setpointInput) {
+          setpointInput.value = payload.setpoint_C.toFixed(2);
+        }
+        if (hysteresisInput) {
+          hysteresisInput.value = payload.hysteresis_C.toFixed(2);
+        }
+        if (telemetryInput) {
+          telemetryInput.value = String(payload.telemetry_ms);
+        }
+        if (latestSnapshot) {
+          updateSensorStats();
+        }
+        chart.update('none');
         setCommandStatus(`Setpoint set to ${payload.setpoint_C.toFixed(2)} °C`, 'success');
       } catch (err) {
         console.error('Setpoint update failed', err);
@@ -848,6 +963,27 @@
   if (telemetryInput && (!telemetryInput.value || Number(telemetryInput.value) <= 0)) {
     telemetryInput.value = '1000';
   }
+
+  if (yMinInput) {
+    yMinInput.value = yAxisMin.toFixed(1);
+    const syncYAxis = () => {
+      updateYAxisFromInputs(false);
+    };
+    yMinInput.addEventListener('input', syncYAxis);
+    yMinInput.addEventListener('change', syncYAxis);
+    yMinInput.addEventListener('blur', syncYAxis);
+  }
+  if (yMaxInput) {
+    yMaxInput.value = yAxisMax.toFixed(1);
+    const syncYAxis = () => {
+      updateYAxisFromInputs(false);
+    };
+    yMaxInput.addEventListener('input', syncYAxis);
+    yMaxInput.addEventListener('change', syncYAxis);
+    yMaxInput.addEventListener('blur', syncYAxis);
+  }
+
+  applyYAxisLimits();
 
   renderSensorCheckboxes(0);
 
