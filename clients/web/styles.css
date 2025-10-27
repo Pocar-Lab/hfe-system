@@ -1,0 +1,348 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  font-family: "Segoe UI", Roboto, sans-serif;
+  min-height: 100%;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+:root {
+  --bg-primary: #101418;
+  --bg-secondary: #11161b;
+  --bg-accent: #151b20;
+  --text-primary: #f3f5f7;
+  --text-secondary: rgba(255, 255, 255, 0.75);
+  --border-soft: rgba(255, 255, 255, 0.08);
+  --button-background: rgba(255, 255, 255, 0.1);
+  --button-background-hover: rgba(255, 255, 255, 0.2);
+  --button-primary: #2d82ff;
+  --button-primary-hover: #166ff2;
+  --valve-open-bg: rgba(46, 204, 113, 0.2);
+  --valve-open-text: #2ecc71;
+  --valve-closed-bg: rgba(236, 240, 241, 0.14);
+  --valve-closed-text: #ecf0f1;
+  --chart-grid: rgba(255, 255, 255, 0.08);
+  --chart-text: rgba(255, 255, 255, 0.65);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg-primary: #f7f9fb;
+    --bg-secondary: #ffffff;
+    --bg-accent: #f1f4f8;
+    --text-primary: #1b1f23;
+    --text-secondary: rgba(0, 0, 0, 0.65);
+    --border-soft: rgba(0, 0, 0, 0.08);
+    --button-background: rgba(0, 0, 0, 0.07);
+    --button-background-hover: rgba(0, 0, 0, 0.12);
+    --button-primary: #1a6dff;
+    --button-primary-hover: #1558cc;
+    --valve-open-bg: rgba(46, 204, 113, 0.15);
+    --valve-open-text: #117a3d;
+    --valve-closed-bg: rgba(0, 0, 0, 0.05);
+    --valve-closed-text: #1b1f23;
+    --chart-grid: rgba(0, 0, 0, 0.1);
+    --chart-text: rgba(0, 0, 0, 0.6);
+  }
+}
+
+header {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-accent);
+  text-align: center;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 1.6rem;
+}
+
+#status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: stretch;
+  gap: 12px;
+  padding: 10px 24px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.status-chip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  white-space: nowrap;
+  flex: 1 1 220px;
+  min-width: clamp(180px, 28vw, 260px);
+  max-width: 360px;
+}
+
+main {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 20px 24px 40px;
+}
+
+#chart-section {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  padding: 16px;
+  min-height: clamp(260px, 45vh, 640px);
+  display: flex;
+  align-items: stretch;
+  position: relative;
+}
+
+#temp-chart {
+  width: 100%;
+  height: 100%;
+  min-height: clamp(220px, 42vh, 560px);
+}
+
+#stats-section {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.stat-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.stat-card h2 {
+  margin: 0 0 12px 0;
+  font-size: 1rem;
+  color: var(--text-secondary);
+}
+
+.stat-card p {
+  margin: 0 0 6px 0;
+  font-size: 1.1rem;
+}
+
+.stat-card p.muted {
+  font-size: 0.95rem;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+
+.avg-selection {
+  margin-top: 12px;
+}
+
+.sensor-values-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.sensor-chip {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: var(--button-background);
+  font-size: 0.9rem;
+  color: var(--text-primary);
+}
+
+.sensor-chip.selected {
+  border-color: var(--button-primary);
+  background: rgba(45, 130, 255, 0.15);
+}
+
+.sensor-chip.excluded {
+  opacity: 0.6;
+}
+
+.sensor-chip.inactive {
+  opacity: 0.4;
+  font-style: italic;
+}
+
+#controls-section {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.control-group {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.control-group h2 {
+  margin: 0 0 12px 0;
+  font-size: 1rem;
+  color: var(--text-secondary);
+}
+
+.form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.form-row label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  min-width: 120px;
+}
+
+.form-actions {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-width: 120px;
+}
+
+.form-actions button {
+  width: 100%;
+}
+
+.form-row input {
+  margin-top: 4px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.form-hint {
+  margin-top: 4px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  max-width: 220px;
+}
+
+.form-row input:focus {
+  outline: none;
+  border-color: var(--button-primary);
+  box-shadow: 0 0 0 2px rgba(45, 130, 255, 0.2);
+}
+
+.chip-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.sensor-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-primary);
+  font-size: 0.9rem;
+}
+
+.sensor-checkbox input[type="checkbox"] {
+  accent-color: var(--button-primary);
+}
+
+.sensor-checkbox span {
+  color: var(--text-primary);
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.button-row.compact {
+  gap: 8px;
+  margin-top: 8px;
+}
+
+button {
+  appearance: none;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-size: 0.95rem;
+  cursor: pointer;
+  background: var(--button-background);
+  color: var(--text-primary);
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+button.primary {
+  background: var(--button-primary);
+  color: #fff;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+button:hover:not(:disabled) {
+  background: var(--button-background-hover);
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--button-primary-hover);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+#valve-state {
+  font-size: 1.8rem;
+  font-weight: 600;
+  padding: 8px 12px;
+  border-radius: 8px;
+  display: inline-block;
+}
+
+.valve-open {
+  background: var(--valve-open-bg);
+  color: var(--valve-open-text);
+}
+
+.valve-closed {
+  background: var(--valve-closed-bg);
+  color: var(--valve-closed-text);
+}
+
+@media (max-width: 768px) {
+  header h1 {
+    font-size: 1.3rem;
+  }
+
+  #status-bar {
+    flex-direction: column;
+    gap: 8px;
+  }
+}
