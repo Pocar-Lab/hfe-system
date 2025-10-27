@@ -16,12 +16,15 @@ from .notebook import (
     fit_heat_leak_linear,
     predict_heat_leak_fit,
     fit_ua_from_corrected,
+    fit_temperature_window,
     heat_leak_windows,
     heat_leak_subset,
     integrate_corrected_power,
     linear_trend,
     prepare_dataset,
+    plot_temperature_window_fit,
     summarize_windows,
+    WindowTemperatureFit,
 )
 from .viz import plot_heat_leak_fit, plot_power_and_flux, plot_temperatures
 
@@ -42,10 +45,13 @@ __all__ = [
     "fit_heat_leak_linear",
     "predict_heat_leak_fit",
     "fit_ua_from_corrected",
+    "fit_temperature_window",
     "integrate_corrected_power",
     "summarize_windows",
     "HeatLeakFit",
+    "WindowTemperatureFit",
     "plot_temperatures",
     "plot_power_and_flux",
+    "plot_temperature_window_fit",
     "plot_heat_leak_fit",
 ]

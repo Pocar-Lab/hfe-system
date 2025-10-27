@@ -342,3 +342,145 @@ def fit_ua_from_corrected(
     ss_tot = float(np.dot(y - y.mean(), y - y.mean()))
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
     return {"UA_W_per_K": ua, "r_squared": r2, "points": int(subset.shape[0])}
+
+
+@dataclass(frozen=True)
+class WindowTemperatureFit:
+    """Linear fit of bulk temperature over a specific time window."""
+
+    dataset: str
+    window_start_min: float
+    window_end_min: float
+    samples: int
+    slope_C_per_min: float
+    intercept_C: float
+    slope_C_per_s: float
+    r_squared: float
+    P_bath_fit_W: float
+    P_HX_fit_W: float
+    UA_fit_W_per_K: float
+    heat_flux_fit_W_m2: float
+    UA_area_fit_W_per_m2K: float
+    DeltaT_mean_C: float
+    time_min: np.ndarray
+    temps_C: np.ndarray
+    fitted_C: np.ndarray
+
+
+def fit_temperature_window(
+    df: pd.DataFrame,
+    *,
+    Cp_JK: float,
+    heat_leak_W: float,
+    hx_area_m2: float,
+    t_window_min: Tuple[float, float],
+    dataset: str = "",
+) -> WindowTemperatureFit:
+    """
+    Fit the bulk-mean temperature within the requested window and derive HX metrics.
+    """
+    t0, t1 = t_window_min
+    subset = (
+        df[(df["t_min"] >= t0) & (df["t_min"] <= t1)]
+        .replace([np.inf, -np.inf], np.nan)
+        .dropna(subset=["t_min", "time_s", "T_bulk_mean_C", "DeltaT_C"])
+        .copy()
+    )
+    if subset.empty or subset.shape[0] < 2:
+        raise ValueError("Insufficient samples for temperature fit.")
+
+    time_min = subset["t_min"].to_numpy()
+    temps_C = subset["T_bulk_mean_C"].to_numpy()
+    A = np.vstack([time_min, np.ones_like(time_min)]).T
+    slope_C_per_min, intercept_C = np.linalg.lstsq(A, temps_C, rcond=None)[0]
+    fitted_C = slope_C_per_min * time_min + intercept_C
+
+    residuals = temps_C - fitted_C
+    temps_centered = temps_C - temps_C.mean()
+    ss_tot = float(np.dot(temps_centered, temps_centered))
+    ss_res = float(np.dot(residuals, residuals))
+    r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0.0 else float("nan")
+
+    slope_C_per_s = slope_C_per_min / 60.0
+    P_bath_fit_W = -Cp_JK * slope_C_per_s
+    P_HX_fit_W = P_bath_fit_W + heat_leak_W
+
+    deltaT_mean_C = float(np.nanmean(subset["DeltaT_C"]))
+    UA_fit_W_per_K = P_HX_fit_W / deltaT_mean_C if abs(deltaT_mean_C) > 1e-6 else float("nan")
+    heat_flux_fit_W_m2 = P_HX_fit_W / hx_area_m2
+    UA_area_fit_W_per_m2K = (
+        UA_fit_W_per_K / hx_area_m2 if np.isfinite(UA_fit_W_per_K) else float("nan")
+    )
+
+    return WindowTemperatureFit(
+        dataset=dataset,
+        window_start_min=float(t0),
+        window_end_min=float(t1),
+        samples=int(subset.shape[0]),
+        slope_C_per_min=float(slope_C_per_min),
+        intercept_C=float(intercept_C),
+        slope_C_per_s=float(slope_C_per_s),
+        r_squared=float(r_squared),
+        P_bath_fit_W=float(P_bath_fit_W),
+        P_HX_fit_W=float(P_HX_fit_W),
+        UA_fit_W_per_K=float(UA_fit_W_per_K),
+        heat_flux_fit_W_m2=float(heat_flux_fit_W_m2),
+        UA_area_fit_W_per_m2K=float(UA_area_fit_W_per_m2K),
+        DeltaT_mean_C=deltaT_mean_C,
+        time_min=time_min,
+        temps_C=temps_C,
+        fitted_C=fitted_C,
+    )
+
+
+def plot_temperature_window_fit(
+    fit: WindowTemperatureFit,
+    *,
+    title: str | None = None,
+    annotate: bool = True,
+) -> "plt.Figure":
+    """
+    Plot the windowed bulk-temperature samples with the corresponding best-fit line.
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(7.0, 4.2))
+    ax.scatter(fit.time_min, fit.temps_C, s=14, alpha=0.6, label="Bulk mean samples")
+    order = np.argsort(fit.time_min)
+    ax.plot(
+        fit.time_min[order],
+        fit.fitted_C[order],
+        color="tab:red",
+        linewidth=2,
+        label=f"Fit slope = {fit.slope_C_per_min:.3f} °C/min",
+    )
+    ax.set_xlabel("Time (min)")
+    ax.set_ylabel("Bulk mean temperature (°C)")
+    ax.set_title(title or fit.dataset)
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="best")
+
+    if annotate:
+        metrics_text = "\n".join(
+            [
+                f"N = {fit.samples} samples",
+                f"Slope = {fit.slope_C_per_min:.3f} °C/min",
+                f"P_HX (fit) = {fit.P_HX_fit_W:.0f} W",
+                f"UA (fit) = {fit.UA_fit_W_per_K:.1f} W/K",
+                f"Heat flux = {fit.heat_flux_fit_W_m2:.0f} W/m²",
+                f"UA/area = {fit.UA_area_fit_W_per_m2K:.1f} W/m²-K",
+                f"R² = {fit.r_squared:.3f}",
+            ]
+        )
+        ax.text(
+            0.98,
+            0.02,
+            metrics_text,
+            transform=ax.transAxes,
+            fontsize=9,
+            va="bottom",
+            ha="right",
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.85),
+        )
+    fig.tight_layout()
+    return fig
