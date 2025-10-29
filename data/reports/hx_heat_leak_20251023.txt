@@ -1,3 +1,3 @@
-Ambient heat leak (t ≥ 20.0 min): 14.8950 W
-1σ uncertainty: 0.0143 W
-95% CI: 14.8670 – 14.9230 W
+Ambient heat leak (t ≥ 20.0 min): 15.5846 W
+1σ uncertainty: 0.0149 W
+95% CI: 15.5553 – 15.6138 W
