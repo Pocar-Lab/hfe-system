@@ -32,7 +32,7 @@
   - Adjust setpoint/hysteresis/telemetry interval and choose which sensors feed the Auto/average logic via checkboxes; view each sensor's latest value as a chip.
   - Forward over SSH: `ssh -L 8000:localhost:8000 <user>@<host>` then browse `http://localhost:8000/ui`
   - Copy link with `?token=...` if auth enabled, or load without token when `Auth required: False`.
-  - "Start Logging" streams telemetry to `data/raw/<timestamp>.csv` on the supervisor host while also buffering a local download. "Stop & Download" stops the server-side log and saves a copy to your browser.
+  - The logging toggle starts streaming telemetry to `data/raw/<timestamp>.csv` on the supervisor host while buffering a local download; pressing it again ("Stop Logging") stops the server-side log and saves a copy to your browser.
 - Serial/UI logger (legacy): `python3 scripts/plot_temp.py` (set `PORT` if needed).
 
 ## Data Analysis

@@ -24,13 +24,10 @@
   const avgTempEl = document.getElementById('avg-temp');
   const validListEl = document.getElementById('valid-list');
   const overviewConnectionEl = document.getElementById('overview-connection');
-  const overviewLoggingEl = document.getElementById('overview-logging');
   const overviewValveEl = document.getElementById('overview-valve');
   const overviewAvgTempEl = document.getElementById('overview-avg-temp');
   const sensorValuesEl = document.getElementById('sensor-values');
-  const startLoggingBtn = document.getElementById('start-logging');
-  const stopLoggingBtn = document.getElementById('stop-logging');
-  const clearLoggingBtn = document.getElementById('clear-logging');
+  const loggingToggleBtn = document.getElementById('logging-toggle');
   const setpointForm = document.getElementById('setpoint-form');
   const setpointInput = document.getElementById('setpoint-input');
   const hysteresisInput = document.getElementById('hysteresis-input');
@@ -295,6 +292,17 @@
   let loggingRows = [];
   let serverLogInfo = { active: false, filename: null, path: null, rows: 0 };
 
+  function updateLoggingButtonState({ busy = false } = {}) {
+    if (!loggingToggleBtn) {
+      return;
+    }
+    const active = loggingEnabled || serverLogInfo.active;
+    loggingToggleBtn.textContent = active ? 'Stop Logging' : 'Start Logging';
+    loggingToggleBtn.classList.toggle('primary', !active);
+    loggingToggleBtn.classList.toggle('danger', active);
+    loggingToggleBtn.disabled = busy;
+  }
+
   function setConnectionStatus(text, tone = 'normal') {
     const formatted = sentenceCase(text);
     if (statusEl) {
@@ -311,9 +319,6 @@
     const formatted = sentenceCase(text);
     if (loggingStatusEl) {
       loggingStatusEl.textContent = `Logging: ${formatted}`;
-    }
-    if (overviewLoggingEl) {
-      overviewLoggingEl.textContent = formatted || '—';
     }
   }
 
@@ -492,15 +497,11 @@
         loggingRows = [];
       }
       updateLoggingStatusLabel();
-      startLoggingBtn.disabled = serverLogInfo.active;
-      stopLoggingBtn.disabled = !serverLogInfo.active;
-      clearLoggingBtn.disabled = loggingRows.length === 0;
+      updateLoggingButtonState();
     } catch (err) {
       console.warn('Logging status fetch failed', err);
       updateLoggingStatusLabel();
-      startLoggingBtn.disabled = false;
-      stopLoggingBtn.disabled = true;
-      clearLoggingBtn.disabled = loggingRows.length === 0;
+      updateLoggingButtonState();
     }
   }
 
@@ -693,7 +694,6 @@
       row.push(valve);
       row.push(modeChar);
       loggingRows.push(row);
-      clearLoggingBtn.disabled = false;
     }
 
     updateLoggingStatusLabel();
@@ -774,13 +774,14 @@
   }
 
   async function startLogging() {
-    if (serverLogInfo.active) {
+    if (loggingEnabled || serverLogInfo.active) {
       setCommandStatus('Logging already active', 'warn');
+      updateLoggingButtonState();
       return;
     }
+    updateLoggingButtonState({ busy: true });
     try {
       setCommandStatus('Starting logging…', 'info');
-      startLoggingBtn.disabled = true;
       const data = await apiJson('/api/logging/start', {
         method: 'POST',
         body: JSON.stringify({}),
@@ -794,27 +795,25 @@
       loggingEnabled = true;
       loggingRows = [];
       updateLoggingStatusLabel();
-      startLoggingBtn.disabled = true;
-      stopLoggingBtn.disabled = false;
-      clearLoggingBtn.disabled = true;
       setCommandStatus(`Logging to ${serverLogInfo.path || serverLogInfo.filename || 'server log'}`, 'success');
     } catch (err) {
       console.error('Start logging failed', err);
       setCommandStatus(`Logging start failed: ${err.message}`, 'error');
       loggingEnabled = serverLogInfo.active;
       updateLoggingStatusLabel();
-      startLoggingBtn.disabled = serverLogInfo.active;
-      stopLoggingBtn.disabled = !serverLogInfo.active;
+    } finally {
+      updateLoggingButtonState();
     }
   }
 
   async function stopLogging(download = true) {
     if (!loggingEnabled && !serverLogInfo.active) {
       setCommandStatus('Logging not active', 'warn');
+      updateLoggingButtonState();
       return;
     }
+    updateLoggingButtonState({ busy: true });
     try {
-      stopLoggingBtn.disabled = true;
       const data = await apiJson('/api/logging/stop', {
         method: 'POST',
         body: JSON.stringify({}),
@@ -841,20 +840,12 @@
       setCommandStatus(`Logging stop failed: ${err.message}`, 'error');
     }
     loggingEnabled = false;
-    startLoggingBtn.disabled = serverLogInfo.active;
-    stopLoggingBtn.disabled = !serverLogInfo.active;
     updateLoggingStatusLabel();
-    clearLoggingBtn.disabled = loggingRows.length === 0;
 
     if (download && loggingRows.length > 0) {
       downloadCsv();
     }
-  }
-
-  function clearLogging() {
-    loggingRows = [];
-    updateLoggingStatusLabel();
-    clearLoggingBtn.disabled = true;
+    updateLoggingButtonState();
   }
 
   function downloadCsv() {
@@ -902,7 +893,6 @@
       URL.revokeObjectURL(url);
     }, 1000);
     loggingRows = [];
-    clearLoggingBtn.disabled = true;
     updateLoggingStatusLabel();
   }
 
@@ -978,12 +968,15 @@
     });
   }
 
-  startLoggingBtn.addEventListener('click', () => startLogging());
-  stopLoggingBtn.addEventListener('click', () => stopLogging(true));
-  clearLoggingBtn.addEventListener('click', () => {
-    clearLogging();
-  });
-
+  if (loggingToggleBtn) {
+    loggingToggleBtn.addEventListener('click', () => {
+      if (loggingEnabled || serverLogInfo.active) {
+        stopLogging(true);
+      } else {
+        startLogging();
+      }
+    });
+  }
   window.addEventListener('beforeunload', () => {
     if (ws) {
       ws.close();
@@ -1006,6 +999,7 @@
   renderSensorCheckboxes(0);
 
   updateLoggingStatusLabel();
+  updateLoggingButtonState();
 
   refreshLoggingStatus()
     .catch(() => {})

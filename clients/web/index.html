@@ -12,11 +12,17 @@
   <body>
     <header id="top-bar">
       <h1 class="brand">CryoLoop</h1>
-      <nav id="page-tabs" aria-label="View selection">
-        <button type="button" class="page-tab active" data-page="general">General</button>
-        <button type="button" class="page-tab" data-page="pump">Pump Control</button>
-        <button type="button" class="page-tab" data-page="hx">Heat Exchanger</button>
-      </nav>
+      <div class="header-controls">
+        <nav id="page-tabs" aria-label="View selection">
+          <button type="button" class="page-tab active" data-page="general">General</button>
+          <button type="button" class="page-tab" data-page="pump">Pump Control</button>
+          <button type="button" class="page-tab" data-page="hx">Heat Exchanger</button>
+          <button type="button" class="page-tab" data-page="fluids">Fluid Properties</button>
+        </nav>
+        <div class="logging-controls button-row">
+          <button id="logging-toggle" class="primary">Start Logging</button>
+        </div>
+      </div>
     </header>
 
     <div id="status-strip">
@@ -33,10 +39,6 @@
             Welcome to the HFE operations console. Use this page for quick status checks, then dive
             into the Pump or Heat Exchanger panels for detailed control and telemetry.
           </p>
-          <div class="hero-actions">
-            <button type="button" class="page-link primary" data-target-page="pump">Go to Pump Control</button>
-            <button type="button" class="page-link" data-target-page="hx">Open Heat Exchanger View</button>
-          </div>
         </section>
 
         <section class="overview-grid">
@@ -46,14 +48,14 @@
             <p class="overview-hint">Reflects telemetry WebSocket state.</p>
           </article>
           <article class="overview-card">
-            <h3>Logging</h3>
-            <p id="overview-logging" class="overview-value sentence-case">Off</p>
-            <p class="overview-hint">Includes server-side logging and client download buffer.</p>
+            <h3>Pump Speed</h3>
+            <p class="overview-value">—</p>
+            <p class="overview-hint">Displays the pump's RPM once telemetry is available.</p>
           </article>
           <article class="overview-card">
-            <h3>Valve</h3>
+            <h3>LN Valve</h3>
             <p id="overview-valve" class="overview-value sentence-case">—</p>
-            <p class="overview-hint">Shows current valve mode and state.</p>
+            <p class="overview-hint">Shows current LN valve mode and state.</p>
           </article>
           <article class="overview-card">
             <h3>Selected Average</h3>
@@ -68,16 +70,6 @@
 
         <section id="stats-section">
           <div class="stat-card">
-            <h2>Valve</h2>
-            <p id="valve-state" class="valve-closed sentence-case">Closed</p>
-            <p id="mode-state">Mode: —</p>
-            <div class="button-row compact">
-              <button data-cmd="VALVE OPEN" class="primary">Open</button>
-              <button data-cmd="VALVE CLOSE" class="primary">Close</button>
-              <button data-cmd="VALVE AUTO">Auto</button>
-            </div>
-          </div>
-          <div class="stat-card">
             <h2>Sensors</h2>
             <p id="sensor-count">Active: —</p>
             <p id="valid-count">Valid now: —</p>
@@ -85,51 +77,6 @@
             <div id="sensor-values" class="sensor-values-grid">
               <p class="muted">No telemetry yet.</p>
             </div>
-          </div>
-          <div class="stat-card">
-            <h2>Average (selected)</h2>
-            <p id="avg-temp">—</p>
-            <div id="sensor-selection" class="avg-selection">
-              <p class="muted">Sensors included in average:</p>
-              <div id="sensor-checkboxes" class="chip-grid">
-                <p class="muted">Awaiting telemetry…</p>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section id="controls-section">
-          <div class="control-group">
-            <h2>Logging</h2>
-            <div class="button-row">
-              <button id="start-logging" class="primary">Start Logging</button>
-              <button id="stop-logging" disabled>Stop &amp; Download</button>
-              <button id="clear-logging" disabled>Clear Buffer</button>
-            </div>
-          </div>
-
-          <div class="control-group">
-            <h2>Control Targets</h2>
-            <form id="setpoint-form" class="form-row">
-              <label>
-                Setpoint (°C)
-                <input type="number" id="setpoint-input" step="0.1" inputmode="decimal" value="25.0" />
-                <span class="form-hint">Desired temperature the controller tries to maintain.</span>
-              </label>
-              <label>
-                Hysteresis (°C)
-                <input type="number" id="hysteresis-input" step="0.1" inputmode="decimal" value="0.5" />
-                <span class="form-hint">Temperature band around the setpoint before the valve flips.</span>
-              </label>
-              <label>
-                Telemetry interval (ms)
-                <input type="number" id="telemetry-input" step="100" inputmode="numeric" value="1000" />
-                <span class="form-hint">How often the controller sends telemetry (in milliseconds).</span>
-              </label>
-              <div class="form-actions">
-                <button type="submit" class="primary">Apply</button>
-              </div>
-            </form>
           </div>
         </section>
       </div>
@@ -235,9 +182,92 @@
       </div>
 
       <div class="page-panel" id="page-hx" data-page-panel="hx">
-        <section class="stat-card hx-placeholder">
+        <section class="hero-card">
           <h2>Heat Exchanger</h2>
-          <p>Detailed heat exchanger tools will live here soon. Use the General tab for live telemetry and controls.</p>
+          <p>
+            Detailed heat exchanger tools will live here soon. Use this tab for valve control and temperature targeting.
+          </p>
+        </section>
+
+        <section class="stats-section hx-stats">
+          <div class="stat-card">
+            <h2>LN Valve</h2>
+            <p id="valve-state" class="valve-closed sentence-case">Closed</p>
+            <p id="mode-state">Mode: —</p>
+            <div class="button-row compact">
+              <button data-cmd="VALVE OPEN" class="primary">Open</button>
+              <button data-cmd="VALVE CLOSE" class="primary">Close</button>
+              <button data-cmd="VALVE AUTO">Auto</button>
+            </div>
+          </div>
+          <div class="stat-card">
+            <h2>Average (selected)</h2>
+            <p id="avg-temp">—</p>
+            <div id="sensor-selection" class="avg-selection">
+              <p class="muted">Sensors included in average:</p>
+              <div id="sensor-checkboxes" class="chip-grid">
+                <p class="muted">Awaiting telemetry…</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="controls-section" class="controls-section hx-controls">
+          <div class="control-group">
+            <h2>Control Targets</h2>
+            <form id="setpoint-form" class="form-row">
+              <label>
+                Setpoint (°C)
+                <input type="number" id="setpoint-input" step="0.1" inputmode="decimal" value="25.0" />
+                <span class="form-hint">Desired temperature the controller tries to maintain.</span>
+              </label>
+              <label>
+                Hysteresis (°C)
+                <input type="number" id="hysteresis-input" step="0.1" inputmode="decimal" value="0.5" />
+                <span class="form-hint">Temperature band around the setpoint before the valve flips.</span>
+              </label>
+              <label>
+                Telemetry interval (ms)
+                <input type="number" id="telemetry-input" step="100" inputmode="numeric" value="1000" />
+                <span class="form-hint">How often the controller sends telemetry (in milliseconds).</span>
+              </label>
+              <div class="form-actions">
+                <button type="submit" class="primary">Apply</button>
+              </div>
+            </form>
+          </div>
+        </section>
+      </div>
+
+      <div class="page-panel" id="page-fluids" data-page-panel="fluids">
+        <section class="hero-card">
+          <h2>Fluid Properties</h2>
+          <p>
+            Track cryogenic fluid behavior here. Once telemetry is available, these metrics will populate automatically.
+          </p>
+        </section>
+
+        <section class="stats-section">
+          <div class="stat-card">
+            <h2>Temperature Increase</h2>
+            <p id="fluid-temp-rise" class="muted">Awaiting telemetry…</p>
+          </div>
+          <div class="stat-card">
+            <h2>Mass Flow Rate</h2>
+            <p id="fluid-mass-flow" class="muted">Awaiting telemetry…</p>
+          </div>
+          <div class="stat-card">
+            <h2>Density</h2>
+            <p id="fluid-density" class="muted">Awaiting telemetry…</p>
+          </div>
+          <div class="stat-card">
+            <h2>Viscosity</h2>
+            <p id="fluid-viscosity" class="muted">Awaiting telemetry…</p>
+          </div>
+          <div class="stat-card">
+            <h2>Mixing Efficiency</h2>
+            <p id="fluid-mixing-efficiency" class="muted">Awaiting telemetry…</p>
+          </div>
         </section>
       </div>
     </main>
