@@ -37,6 +37,46 @@
   const controlsSectionEl = document.getElementById('controls-section');
   const headerEl = document.querySelector('header');
   const statusStripEl = document.getElementById('status-strip');
+  const pageButtons = Array.from(document.querySelectorAll('#page-tabs .page-tab'));
+  const pagePanels = Array.from(document.querySelectorAll('[data-page-panel]'));
+  const heroLinkButtons = Array.from(document.querySelectorAll('.page-link[data-target-page]'));
+  let activePage = 'general';
+
+  function setActivePage(page) {
+    const target = page || 'general';
+    if (target === activePage) {
+      return;
+    }
+    activePage = target;
+    pageButtons.forEach((btn) => {
+      const match = (btn.dataset.page || 'general') === activePage;
+      btn.classList.toggle('active', match);
+      btn.setAttribute('aria-pressed', match ? 'true' : 'false');
+    });
+    pagePanels.forEach((panel) => {
+      const match = (panel.dataset.pagePanel || 'general') === activePage;
+      panel.classList.toggle('active', match);
+    });
+    scheduleChartHeightUpdate();
+  }
+
+  if (pageButtons.length) {
+    const initialButton = pageButtons.find((btn) => btn.classList.contains('active'));
+    if (initialButton) {
+      activePage = initialButton.dataset.page || 'general';
+    }
+  }
+
+  pageButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      setActivePage(btn.dataset.page || 'general');
+    });
+  });
+  heroLinkButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      setActivePage(btn.dataset.targetPage || 'general');
+    });
+  });
 
   const ctx = document.getElementById('temp-chart').getContext('2d');
   const customCss = getComputedStyle(document.documentElement);
@@ -132,6 +172,7 @@
   const AUTO_COMMAND_COOLDOWN_MS = 1500;
   let pendingChartHeightFrame = null;
   let chartResizeObserver = null;
+  setActivePage(activePage);
   let autoValveDesiredState = null;
   let autoValveLastCommandTs = 0;
   let clientAutoActive = false;
