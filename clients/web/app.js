@@ -23,6 +23,10 @@
   const validCountEl = document.getElementById('valid-count');
   const avgTempEl = document.getElementById('avg-temp');
   const validListEl = document.getElementById('valid-list');
+  const overviewConnectionEl = document.getElementById('overview-connection');
+  const overviewLoggingEl = document.getElementById('overview-logging');
+  const overviewValveEl = document.getElementById('overview-valve');
+  const overviewAvgTempEl = document.getElementById('overview-avg-temp');
   const sensorValuesEl = document.getElementById('sensor-values');
   const startLoggingBtn = document.getElementById('start-logging');
   const stopLoggingBtn = document.getElementById('stop-logging');
@@ -107,6 +111,15 @@
     spanGaps: true,
     data: [],
   }));
+
+  function sentenceCase(text) {
+    const value = text === undefined || text === null ? '' : String(text);
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return '';
+    }
+    return trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase();
+  }
 
   let currentSetpoint = SETPOINT;
   let currentHysteresis = 0.5;
@@ -283,12 +296,25 @@
   let serverLogInfo = { active: false, filename: null, path: null, rows: 0 };
 
   function setConnectionStatus(text, tone = 'normal') {
-    statusEl.textContent = `Status: ${text}`;
-    statusEl.dataset.tone = tone;
+    const formatted = sentenceCase(text);
+    if (statusEl) {
+      statusEl.textContent = `Status: ${formatted}`;
+      statusEl.dataset.tone = tone;
+    }
+    if (overviewConnectionEl) {
+      overviewConnectionEl.textContent = formatted || '—';
+      overviewConnectionEl.dataset.tone = tone;
+    }
   }
 
   function setLoggingStatus(text) {
-    loggingStatusEl.textContent = `Logging: ${text}`;
+    const formatted = sentenceCase(text);
+    if (loggingStatusEl) {
+      loggingStatusEl.textContent = `Logging: ${formatted}`;
+    }
+    if (overviewLoggingEl) {
+      overviewLoggingEl.textContent = formatted || '—';
+    }
   }
 
   function updateLoggingStatusLabel() {
@@ -407,6 +433,11 @@
     validListEl.textContent = selectedLabels.length ? `Included sensors: ${selectedLabels.join(', ')}` : 'Included sensors: —';
     const avgValue = selectedValid ? selectedSum / selectedValid : NaN;
     avgTempEl.textContent = Number.isFinite(avgValue) ? `${avgValue.toFixed(2)} °C` : '—';
+    if (overviewAvgTempEl) {
+      overviewAvgTempEl.textContent = Number.isFinite(avgValue)
+        ? `${avgValue.toFixed(2)} °C`
+        : '—';
+    }
     if (latestSnapshot) {
       latestSnapshot.avgSelected = Number.isFinite(avgValue) ? avgValue : null;
       latestSnapshot.selectedValid = selectedValid;
@@ -612,7 +643,8 @@
     const valve = Number.isFinite(data.valve) ? Number(data.valve) : 0;
 
     const valveOpen = Boolean(valve);
-    valveStateEl.textContent = valveOpen ? 'OPEN' : 'CLOSED';
+    const valveLabel = valveOpen ? 'Open' : 'Closed';
+    valveStateEl.textContent = valveLabel;
     valveStateEl.classList.toggle('valve-open', valveOpen);
     valveStateEl.classList.toggle('valve-closed', !valveOpen);
 
@@ -620,17 +652,24 @@
     const modeChar = modeCharRaw ? modeCharRaw.charAt(0).toUpperCase() : '';
     let modeText;
     if (clientAutoActive) {
-      modeText = 'AUTO';
+      modeText = 'Auto';
     } else if (modeChar === 'A') {
-      modeText = 'AUTO';
+      modeText = 'Auto';
     } else if (modeChar === 'O') {
-      modeText = 'FORCED OPEN';
+      modeText = 'Forced open';
     } else if (modeChar === 'C') {
-      modeText = 'FORCED CLOSE';
+      modeText = 'Forced close';
     } else {
       modeText = '—';
     }
     modeStateEl.textContent = `Mode: ${modeText}`;
+    if (overviewValveEl) {
+      if (modeText && modeText !== '—') {
+        overviewValveEl.textContent = `${valveLabel} · ${modeText}`;
+      } else {
+        overviewValveEl.textContent = valveLabel;
+      }
+    }
 
     latestSnapshot = {
       temps: temps.slice(0, MAX_SENSORS),

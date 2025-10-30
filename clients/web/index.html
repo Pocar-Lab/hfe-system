@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Cryogenic HX Monitor</title>
+    <title>CryoLoop</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="stylesheet" href="styles.css" />
     <meta name="color-scheme" content="dark light" />
@@ -10,87 +10,236 @@
     <script defer src="app.js"></script>
   </head>
   <body>
-    <header>
-      <h1>Cryogenic HX Monitor</h1>
+    <header id="top-bar">
+      <h1 class="brand">CryoLoop</h1>
+      <nav id="page-tabs" aria-label="View selection">
+        <button type="button" class="page-tab active" data-page="general">General</button>
+        <button type="button" class="page-tab" data-page="pump">Pump Control</button>
+        <button type="button" class="page-tab" data-page="hx">Heat Exchanger</button>
+      </nav>
     </header>
 
     <div id="status-strip">
-      <span id="connection-status" class="status-chip">Status: initializing…</span>
-      <span id="logging-status" class="status-chip">Logging: off</span>
+      <span id="connection-status" class="status-chip sentence-case">Status: initializing…</span>
+      <span id="logging-status" class="status-chip sentence-case">Logging: off</span>
       <span id="command-status" class="status-chip status-compact">Alert: none</span>
     </div>
 
     <main>
-      <section id="chart-section">
-        <canvas id="temp-chart" aria-label="Temperature chart"></canvas>
-      </section>
+      <div class="page-panel active" id="page-general" data-page-panel="general">
+        <section class="hero-card">
+          <h2>System Overview</h2>
+          <p>
+            Welcome to the HFE operations console. Use this page for quick status checks, then dive
+            into the Pump or Heat Exchanger panels for detailed control and telemetry.
+          </p>
+          <div class="hero-actions">
+            <button type="button" class="page-link primary" data-target-page="pump">Go to Pump Control</button>
+            <button type="button" class="page-link" data-target-page="hx">Open Heat Exchanger View</button>
+          </div>
+        </section>
 
-      <section id="stats-section">
-        <div class="stat-card">
-          <h2>Valve</h2>
-          <p id="valve-state" class="valve-closed">CLOSED</p>
-          <p id="mode-state">Mode: —</p>
-          <div class="button-row compact">
-            <button data-cmd="VALVE OPEN" class="primary">Open</button>
-            <button data-cmd="VALVE CLOSE" class="primary">Close</button>
-            <button data-cmd="VALVE AUTO">Auto</button>
-          </div>
-        </div>
-        <div class="stat-card">
-          <h2>Sensors</h2>
-          <p id="sensor-count">Active: —</p>
-          <p id="valid-count">Valid now: —</p>
-          <p id="valid-list" class="muted">Included sensors: —</p>
-          <div id="sensor-values" class="sensor-values-grid">
-            <p class="muted">No telemetry yet.</p>
-          </div>
-        </div>
-        <div class="stat-card">
-          <h2>Average (selected)</h2>
-          <p id="avg-temp">—</p>
-          <div id="sensor-selection" class="avg-selection">
-            <p class="muted">Sensors included in average:</p>
-            <div id="sensor-checkboxes" class="chip-grid">
-              <p class="muted">Awaiting telemetry…</p>
+        <section class="overview-grid">
+          <article class="overview-card">
+            <h3>Connection</h3>
+            <p id="overview-connection" class="overview-value sentence-case">Initializing…</p>
+            <p class="overview-hint">Reflects telemetry WebSocket state.</p>
+          </article>
+          <article class="overview-card">
+            <h3>Logging</h3>
+            <p id="overview-logging" class="overview-value sentence-case">Off</p>
+            <p class="overview-hint">Includes server-side logging and client download buffer.</p>
+          </article>
+          <article class="overview-card">
+            <h3>Valve</h3>
+            <p id="overview-valve" class="overview-value sentence-case">—</p>
+            <p class="overview-hint">Shows current valve mode and state.</p>
+          </article>
+          <article class="overview-card">
+            <h3>Selected Average</h3>
+            <p id="overview-avg-temp" class="overview-value">—</p>
+            <p class="overview-hint">Average of sensors currently marked for control.</p>
+          </article>
+        </section>
+
+        <section id="chart-section">
+          <canvas id="temp-chart" aria-label="Temperature chart"></canvas>
+        </section>
+
+        <section id="stats-section">
+          <div class="stat-card">
+            <h2>Valve</h2>
+            <p id="valve-state" class="valve-closed sentence-case">Closed</p>
+            <p id="mode-state">Mode: —</p>
+            <div class="button-row compact">
+              <button data-cmd="VALVE OPEN" class="primary">Open</button>
+              <button data-cmd="VALVE CLOSE" class="primary">Close</button>
+              <button data-cmd="VALVE AUTO">Auto</button>
             </div>
           </div>
-        </div>
-      </section>
-
-      <section id="controls-section">
-        <div class="control-group">
-          <h2>Logging</h2>
-          <div class="button-row">
-            <button id="start-logging" class="primary">Start Logging</button>
-            <button id="stop-logging" disabled>Stop &amp; Download</button>
-            <button id="clear-logging" disabled>Clear Buffer</button>
-          </div>
-        </div>
-
-        <div class="control-group">
-          <h2>Control Targets</h2>
-          <form id="setpoint-form" class="form-row">
-            <label>
-              Setpoint (°C)
-              <input type="number" id="setpoint-input" step="0.1" inputmode="decimal" value="25.0" />
-              <span class="form-hint">Desired temperature the controller tries to maintain.</span>
-            </label>
-            <label>
-              Hysteresis (°C)
-              <input type="number" id="hysteresis-input" step="0.1" inputmode="decimal" value="0.5" />
-              <span class="form-hint">Temperature band around the setpoint before the valve flips.</span>
-            </label>
-            <label>
-              Telemetry interval (ms)
-              <input type="number" id="telemetry-input" step="100" inputmode="numeric" value="1000" />
-              <span class="form-hint">How often the controller sends telemetry (in milliseconds).</span>
-            </label>
-            <div class="form-actions">
-              <button type="submit" class="primary">Apply</button>
+          <div class="stat-card">
+            <h2>Sensors</h2>
+            <p id="sensor-count">Active: —</p>
+            <p id="valid-count">Valid now: —</p>
+            <p id="valid-list" class="muted">Included sensors: —</p>
+            <div id="sensor-values" class="sensor-values-grid">
+              <p class="muted">No telemetry yet.</p>
             </div>
-          </form>
-        </div>
-      </section>
+          </div>
+          <div class="stat-card">
+            <h2>Average (selected)</h2>
+            <p id="avg-temp">—</p>
+            <div id="sensor-selection" class="avg-selection">
+              <p class="muted">Sensors included in average:</p>
+              <div id="sensor-checkboxes" class="chip-grid">
+                <p class="muted">Awaiting telemetry…</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="controls-section">
+          <div class="control-group">
+            <h2>Logging</h2>
+            <div class="button-row">
+              <button id="start-logging" class="primary">Start Logging</button>
+              <button id="stop-logging" disabled>Stop &amp; Download</button>
+              <button id="clear-logging" disabled>Clear Buffer</button>
+            </div>
+          </div>
+
+          <div class="control-group">
+            <h2>Control Targets</h2>
+            <form id="setpoint-form" class="form-row">
+              <label>
+                Setpoint (°C)
+                <input type="number" id="setpoint-input" step="0.1" inputmode="decimal" value="25.0" />
+                <span class="form-hint">Desired temperature the controller tries to maintain.</span>
+              </label>
+              <label>
+                Hysteresis (°C)
+                <input type="number" id="hysteresis-input" step="0.1" inputmode="decimal" value="0.5" />
+                <span class="form-hint">Temperature band around the setpoint before the valve flips.</span>
+              </label>
+              <label>
+                Telemetry interval (ms)
+                <input type="number" id="telemetry-input" step="100" inputmode="numeric" value="1000" />
+                <span class="form-hint">How often the controller sends telemetry (in milliseconds).</span>
+              </label>
+              <div class="form-actions">
+                <button type="submit" class="primary">Apply</button>
+              </div>
+            </form>
+          </div>
+        </section>
+      </div>
+
+      <div class="page-panel" id="page-pump" data-page-panel="pump">
+        <section class="pump-section">
+          <div class="stat-card">
+            <h2>Loop Pressures</h2>
+            <div class="metric-grid metrics-two">
+              <div class="metric-block">
+                <span class="metric-label">Before Pump</span>
+                <span id="pump-pressure-before" class="metric-value">—</span>
+                <span id="pump-pressure-before-unit" class="metric-unit">psi</span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">After Pump</span>
+                <span id="pump-pressure-after" class="metric-value">—</span>
+                <span id="pump-pressure-after-unit" class="metric-unit">psi</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="pump-section">
+          <div class="stat-card">
+            <h2>VFD Monitors</h2>
+            <div class="metric-grid metrics-three">
+              <div class="metric-block">
+                <span class="metric-label">Output Frequency</span>
+                <span id="vfd-frequency" class="metric-value">—</span>
+                <span id="vfd-frequency-unit" class="metric-unit">Hz</span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">Output Current</span>
+                <span id="vfd-current" class="metric-value">—</span>
+                <span id="vfd-current-unit" class="metric-unit">A</span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">Output Voltage</span>
+                <span id="vfd-voltage" class="metric-value">—</span>
+                <span id="vfd-voltage-unit" class="metric-unit">V</span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">Input Power</span>
+                <span id="vfd-power" class="metric-value">—</span>
+                <span id="vfd-power-unit" class="metric-unit">W</span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">DC Bus</span>
+                <span id="vfd-bus" class="metric-value">—</span>
+                <span id="vfd-bus-unit" class="metric-unit">V</span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">Analog Monitor</span>
+                <span id="vfd-analog-channel" class="metric-value">—</span>
+                <span id="vfd-analog-unit" class="metric-unit"></span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="pump-section">
+          <div class="stat-card">
+            <h2>PID Signals</h2>
+            <div class="metric-grid metrics-three">
+              <div class="metric-block">
+                <span class="metric-label">Set Value (SV)</span>
+                <span id="vfd-pid-sv" class="metric-value">—</span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">Measured (FB)</span>
+                <span id="vfd-pid-feedback" class="metric-value">—</span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">Motor Output (MV)</span>
+                <span id="vfd-pid-mv" class="metric-value">—</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="pump-section">
+          <div class="stat-card">
+            <h2>Drive Status</h2>
+            <div class="drive-status-grid">
+              <div id="vfd-run-status" class="drive-chip" data-state="unknown">
+                <span class="drive-label">Run / At Speed</span>
+                <span class="drive-value">—</span>
+              </div>
+              <div id="vfd-warning-status" class="drive-chip" data-state="unknown">
+                <span class="drive-label">Overload Warning</span>
+                <span class="drive-value">—</span>
+              </div>
+              <div id="vfd-fault-status" class="drive-chip" data-state="unknown">
+                <span class="drive-label">Fault / Trip</span>
+                <span class="drive-value">—</span>
+              </div>
+            </div>
+            <p id="vfd-fault-detail" class="muted drive-detail">No active fault.</p>
+            <p id="vfd-display" class="drive-display">—</p>
+          </div>
+        </section>
+      </div>
+
+      <div class="page-panel" id="page-hx" data-page-panel="hx">
+        <section class="stat-card hx-placeholder">
+          <h2>Heat Exchanger</h2>
+          <p>Detailed heat exchanger tools will live here soon. Use the General tab for live telemetry and controls.</p>
+        </section>
+      </div>
     </main>
   </body>
 </html>
