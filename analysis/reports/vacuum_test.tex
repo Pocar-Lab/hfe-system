@@ -1,0 +1,173 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{amssymb}
+\usepackage{amsmath}
+\usepackage{epstopdf}
+\usepackage{titling}
+\usepackage{siunitx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{authblk}
+\usepackage[margin=1in]{geometry}
+\usepackage{subcaption}
+\usepackage{hyperref}
+
+
+\newcommand{\HFE}{\textsc{HFE}}
+\DeclareSIUnit\bar{bar}
+\DeclareSIUnit\liter{L}
+
+\title{%
+  \vspace{-30pt}%
+  \begin{flushright}
+    {\bf\small PocarLab Note\\\vspace{-10pt}\today}
+  \end{flushright}
+  \vspace{10pt}
+  \bfseries\Large HFE System Vacuum Leak Test%
+}
+
+\author{Antoine Amy}
+\affil{University of Massachusetts, Amherst, MA, USA}
+
+\begin{document}
+\maketitle
+\vspace{-0.5cm}
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{|p{.57in}|p{0.9in}|p{2.5in}|p{.9in}|}
+    \hline
+    \bfseries Version & \bfseries Date & \bfseries Description of changes & \bfseries Editor \\
+    \hline
+    v0.1.0 & 2025-11-05 & Initial vacuum analysis & AA \\
+    \hline
+  \end{tabular}
+\end{table}
+
+\tableofcontents
+\vspace{0.5cm}
+
+The system correspond to a closed vessel of volume \(V=\SI{4.000}{\liter}\) at room temperature.
+Gauge uncertainty used in the notebook fit is \(\sigma_{\mathrm{gauge}}=\SI{0.8}{inHg}\), i.e.
+\(\sigma_P=\SI{27.091}{\milli\bar}\) (assumed \(1\sigma\)). The ambient temperature used for water comparisons is \(T=\SI{21.0}{^\circ C}\).
+
+\begin{table}[htbp]
+    \centering
+    \begin{tabular}{|l|c|c|}
+        \hline
+        \textbf{Timestamp} & \textbf{Gauge (inHg)} & \textbf{Pressure (mbar)} \\
+        \hline
+        2025-10-30 17{:}30 & $-28.0$ & $65.061$ \\
+        2025-10-31 17{:}30 & $-26.0$ & $132.789$ \\
+        2025-11-03 09{:}45 & $-22.0$ & $268.244$ \\
+        2025-11-04 16{:}30 & $-20.0$ & $335.972$ \\
+        \hline
+    \end{tabular}
+    \caption{System pressure measurements (absolute pressure derived from gauge readings).}
+    \label{tab:system_pressure}
+\end{table}
+
+
+The total measurement span is \(\SI{119}{h}\).
+
+\newpage
+
+%=======================================================================
+\section{Pressure Rise}\label{sec:fit}
+%=======================================================================
+
+We model the measured absolute pressure with a straight line
+\begin{equation}
+  P(t) \;=\; a + b\,t,
+\end{equation}
+with \(t\) in hours and per-point uncertainty \(\sigma_P\) set by the gauge. 
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.75\linewidth]{fit.png}
+  \caption{Absolute pressure with weighted linear fit and \(\pm 1\sigma\) band. Points show the measured pressures with gauge uncertainties.}
+  \label{fig:fitplot}
+\end{figure}
+
+The corresponding fit results are stored in Table \ref{tab:fit_results}.
+
+\begin{table}[htbp]
+    \centering
+    \begin{tabular}{|l|c|c|c|}
+        \hline
+        \textbf{Quantity} & \textbf{Value} & \(\boldsymbol{\pm 1\sigma}\) & \textbf{Units} \\
+        \hline
+        Intercept \(a\) & 71.260 & 21.246 & \si{\milli\bar} \\
+        Slope \(b\) & 2.236 & 0.283 & \si{\milli\bar\per h} \\
+        \hline
+    \end{tabular}
+    \caption{Pressure fit parameters.}
+    \label{tab:fit_results}
+\end{table}
+
+
+The corresponding throughput (gas load) is
+\begin{equation}
+  \boxed{Q=Vb=8.944\pm 1.132\;\si{\milli\bar\cdot\liter\per h}}.
+\end{equation}
+
+Using \(R=\SI{0.0831446}{\liter\cdot\bar\per (mol\,K)}\), \(M_{\mathrm w}=\SI{18.01528}{g\per mol}\), and \(T=\SI{21.0}{^\circ C}\), we convert \(Q\) to a water-equivalent source:
+
+\begin{equation}
+  \dot n=\frac{Q}{RT},\qquad
+  \dot m=\dot nM_{\mathrm w},\qquad
+  \dot V_{\mathrm w}\approx \dot m(\mathrm{mL/h}),
+\end{equation}
+yielding
+
+\begin{equation}
+  \boxed{\dot V_{\mathrm w}=\SI{6.588}{\micro L\per h}}.
+\end{equation}
+
+%=======================================================================
+\section{Water Vapor Contribution}\label{sec:water}
+%=======================================================================
+
+At fixed \(T\) and \(V\), any residual liquid water drives the water partial pressure to the saturation value \(p_{\mathrm{sat}}(T)\). It can be obtained via the Antoine equation,
+
+\begin{equation}
+    \log_{10} p_{\mathrm{sat}}[\mathrm{mmHg}]=A - \frac{B}{C+T},
+    \qquad
+    A=8.07131, B=1730.63, C=233.426.
+\end{equation}
+which gives \(p_{\mathrm{sat}}(21^\circ\mathrm{C})=\SI{24.781}{mbar}\), i.e. \(1.49\sigma\) below the lowest achieved pressure $65.061\pm 27.091\;\si{mbar}$. Only a tiny amount of liquid is required to reach saturation:
+
+\begin{equation}
+  n_{\mathrm{sat}}=\frac{p_{\mathrm{sat}}V}{RT},\qquad
+  m_{\mathrm{sat}}=n_{\mathrm{sat}} M_{\mathrm w}\approx \SI{73}{mg}.
+\end{equation}
+Kinetic theory (Hertz–Knudsen)\footnote{See Winkler et al., \emph{Phys. Rev. Lett.} (2004), “Mass and Thermal Accommodation during Gas–Liquid Condensation of Water.” They conclude that both coefficients—mass (condensation) and thermal (energy) accommodation—are likely \(\approx 1\) over 250–290~K.}
+gives the approach to saturation with a characteristic time
+\[
+  \tau=\frac{V}{A\,\alpha}\,\sqrt{\frac{2\pi M}{R T}}
+  \;\approx\;\frac{2.7\times 10^{-5}}{\alpha}\,\frac{1}{A[\mathrm{m}^2]}\ \mathrm{s},
+\]
+where \(V=\SI{4.0}{\liter}\) is the system volume, \(A\simeq \SIrange{1}{100}{\centi\meter\squared}\) (droplet to small puddle) the exposed liquid area, \(\alpha\simeq 0.4\text{–}1\) the (dimensionless) mass/condensation accommodation coefficient, \(M\) the molar mass of water, and \(T=\SI{21}{^\circ C}\). This gives, for \(A=\SIrange{1}{100}{\centi\meter\squared}\),
+\[
+  \boxed{2.7\times 10^{-3}\ \mathrm{s}\ \lesssim\ \tau\ \lesssim\ 0.7\ \mathrm{s}},
+\]
+and even for a tiny puddle \(A\simeq \SI{0.1}{\centi\meter\squared}\) one still finds \(\tau \sim 2.7\text{–}6.8\ \mathrm{s}\). Thus saturation is reached on a timescale of seconds, negligible compared with the hours-long evolution in Table~\ref{tab:system_pressure}.
+
+
+Because the lowest achieved pressure is close to the saturation vapor pressure of water at \(21^\circ\mathrm{C}\), and the time to reach is very fast, water vapor likely set the initial base pressure.
+
+%=======================================================================
+\section{Impact of Water and Atmospheric Leaks}\label{sec:impact}
+%=======================================================================
+
+If residual liquid water were the driver, the total pressure would \emph{not} exceed \(P_\infty\). Compared to \(P_\infty=\SI{89.842}{\milli\bar}\), the subsequent measured pressures are getting way higher (latest measurement by about $9.1\sigma$ above the gauge \(1\sigma\) uncertainty). Therefore, while water set the initial minimum (near \(P_\infty\)), it cannot explain the subsequent rise well above \(P_\infty\); the later behavior is leak-dominated.
+
+For a leak to the atmosphere\footnote{e.g., \href{https://en.wikipedia.org/wiki/Fluid_conductance}{vacuum conductance} \(Q=C(P_{\mathrm{atm}}-P)\).}, the early-time slope scales roughly with $(P_{\mathrm{atm}}-P)$. From the measurements the early slope (day 0$\to$1) is around \SI{2.82e-3}{\bar/h}, while the later slope (day 3$\to$5) is around \SI{2.20e-3}{\bar/h}. The ratio \((\mathrm{later})/(\mathrm{early})\approx 0.78\) matches the head-ratio prediction
+
+\begin{equation}
+    \frac{P_{\mathrm{atm}}-P_{\mathrm{late}}}{P_{\mathrm{atm}}-P_{\mathrm{early}}}=\frac{1-0.268}{1-0.065}\approx 0.783,
+\end{equation}
+consistent with a leak-dominated rise rather than water-limited behavior.
+
+\end{document}

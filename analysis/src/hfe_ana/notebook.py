@@ -362,6 +362,13 @@ class WindowTemperatureFit:
     heat_flux_fit_W_m2: float
     UA_area_fit_W_per_m2K: float
     DeltaT_mean_C: float
+    slope_sigma_C_per_min: float
+    slope_sigma_C_per_s: float
+    P_bath_sigma_W: float
+    P_HX_sigma_W: float
+    UA_sigma_W_per_K: float
+    heat_flux_sigma_W_m2: float
+    UA_area_sigma_W_per_m2K: float
     time_min: np.ndarray
     temps_C: np.ndarray
     fitted_C: np.ndarray
@@ -391,6 +398,7 @@ def fit_temperature_window(
 
     time_min = subset["t_min"].to_numpy()
     temps_C = subset["T_bulk_mean_C"].to_numpy()
+    time_centered = time_min - time_min.mean()
     A = np.vstack([time_min, np.ones_like(time_min)]).T
     slope_C_per_min, intercept_C = np.linalg.lstsq(A, temps_C, rcond=None)[0]
     fitted_C = slope_C_per_min * time_min + intercept_C
@@ -400,6 +408,7 @@ def fit_temperature_window(
     ss_tot = float(np.dot(temps_centered, temps_centered))
     ss_res = float(np.dot(residuals, residuals))
     r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0.0 else float("nan")
+    sum_t_center_sq = float(np.dot(time_centered, time_centered))
 
     slope_C_per_s = slope_C_per_min / 60.0
     P_bath_fit_W = -Cp_JK * slope_C_per_s
@@ -411,6 +420,26 @@ def fit_temperature_window(
     UA_area_fit_W_per_m2K = (
         UA_fit_W_per_K / hx_area_m2 if np.isfinite(UA_fit_W_per_K) else float("nan")
     )
+
+    slope_sigma_C_per_min = float("nan")
+    slope_sigma_C_per_s = float("nan")
+    P_bath_sigma_W = float("nan")
+    P_HX_sigma_W = float("nan")
+    UA_sigma_W_per_K = float("nan")
+    heat_flux_sigma_W_m2 = float("nan")
+    UA_area_sigma_W_per_m2K = float("nan")
+    if subset.shape[0] > 2 and sum_t_center_sq > 0.0:
+        sigma2 = ss_res / (subset.shape[0] - 2)
+        slope_sigma_C_per_min = float(np.sqrt(sigma2 / sum_t_center_sq))
+        slope_sigma_C_per_s = slope_sigma_C_per_min / 60.0
+        P_bath_sigma_W = float(Cp_JK * slope_sigma_C_per_s)
+        P_HX_sigma_W = P_bath_sigma_W
+        if abs(deltaT_mean_C) > 1e-6:
+            UA_sigma_W_per_K = float(P_HX_sigma_W / deltaT_mean_C)
+        if hx_area_m2 > 0.0:
+            heat_flux_sigma_W_m2 = float(P_HX_sigma_W / hx_area_m2)
+            if np.isfinite(UA_sigma_W_per_K):
+                UA_area_sigma_W_per_m2K = float(UA_sigma_W_per_K / hx_area_m2)
 
     return WindowTemperatureFit(
         dataset=dataset,
@@ -427,6 +456,13 @@ def fit_temperature_window(
         heat_flux_fit_W_m2=float(heat_flux_fit_W_m2),
         UA_area_fit_W_per_m2K=float(UA_area_fit_W_per_m2K),
         DeltaT_mean_C=deltaT_mean_C,
+        slope_sigma_C_per_min=slope_sigma_C_per_min,
+        slope_sigma_C_per_s=slope_sigma_C_per_s,
+        P_bath_sigma_W=P_bath_sigma_W,
+        P_HX_sigma_W=P_HX_sigma_W,
+        UA_sigma_W_per_K=UA_sigma_W_per_K,
+        heat_flux_sigma_W_m2=heat_flux_sigma_W_m2,
+        UA_area_sigma_W_per_m2K=UA_area_sigma_W_per_m2K,
         time_min=time_min,
         temps_C=temps_C,
         fitted_C=fitted_C,

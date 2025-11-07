@@ -83,7 +83,7 @@ if [[ "${FLASH_FIRMWARE,,}" != "0" && "${FLASH_FIRMWARE,,}" != "false" && "${FLA
     exit 1
   fi
   echo "Rebuilding and uploading firmware (set FLASH_FIRMWARE=0 to skip)…"
-  platformio run -d firmware -t upload
+  platformio run -d firmware -t upload -e megaatmega2560
   if [[ "${pio_env_sourced}" == "1" && "$(type -t deactivate 2>/dev/null)" == "function" ]]; then
     deactivate || true
   fi
