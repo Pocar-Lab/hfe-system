@@ -7,6 +7,7 @@
   const SETPOINT = 25.0;
   const PUMP_MAX_CMD_PCT = 100.0;
   const PUMP_MAX_FREQ_HZ = 71.7;
+  const PUMP_SAFE_MAX_HZ = 60.0;
 
   const params = new URLSearchParams(window.location.search);
   const tokenParam = params.get('token') || '';
@@ -27,7 +28,8 @@
   const pumpCmdForm = document.getElementById('pump-command-form');
   const pumpCmdInput = document.getElementById('pump-command-input');
   const pumpCmdSlider = document.getElementById('pump-command-slider');
-  const pumpCmdPreview = document.getElementById('pump-command-preview');
+  const pumpOverspeedToggle = document.getElementById('pump-overspeed-toggle');
+  const pumpStopButton = document.getElementById('pump-stop-button');
   const pumpRunStateEl = document.getElementById('pump-run-state');
   const pumpCmdHzEl = document.getElementById('pump-cmd-hz');
   const pumpCmdRpmEl = document.getElementById('pump-cmd-rpm');
@@ -147,6 +149,7 @@
   let pumpMaxFreqHz = PUMP_MAX_FREQ_HZ;
   let lastPumpCmdPct = 0;
   let userPumpDirty = false;
+  let overspeedEnabled = false;
 
   function setpointLabel() {
     return `Set-point (${currentSetpoint.toFixed(1)} °C)`;
@@ -494,11 +497,22 @@
     }
   }
 
+  function currentMaxPumpPct() {
+    if (overspeedEnabled) {
+      return PUMP_MAX_CMD_PCT;
+    }
+    if (!Number.isFinite(pumpMaxFreqHz) || pumpMaxFreqHz <= 0) {
+      return PUMP_MAX_CMD_PCT;
+    }
+    const safePct = (Math.min(PUMP_SAFE_MAX_HZ, pumpMaxFreqHz) / pumpMaxFreqHz) * 100;
+    return Math.max(0, Math.min(PUMP_MAX_CMD_PCT, safePct));
+  }
+
   function clampPumpPct(value) {
     if (!Number.isFinite(value)) {
       return 0;
     }
-    return Math.min(Math.max(value, 0), PUMP_MAX_CMD_PCT);
+    return Math.min(Math.max(value, 0), currentMaxPumpPct());
   }
 
   function pumpHzFromPct(pct, maxFreq = pumpMaxFreqHz) {
@@ -508,13 +522,12 @@
     return (pct / 100) * maxFreq;
   }
 
-  function updatePumpPreview(pct, targetHz) {
-    if (!pumpCmdPreview) {
-      return;
+  function applyOverspeedToggle(enabled) {
+    overspeedEnabled = Boolean(enabled);
+    syncPumpInputs(lastPumpCmdPct, { force: true });
+    if (pumpOverspeedToggle) {
+      pumpOverspeedToggle.checked = overspeedEnabled;
     }
-    const pctText = Number.isFinite(pct) ? pct.toFixed(2) : '—';
-    const hzText = Number.isFinite(targetHz) ? targetHz.toFixed(2) : '—';
-    pumpCmdPreview.textContent = `Command: ${pctText} % (${hzText} Hz)`;
   }
 
   function syncPumpInputs(pct, { force = false } = {}) {
@@ -524,12 +537,13 @@
     if (!userPumpDirty || force) {
       if (pumpCmdInput) {
         pumpCmdInput.value = asText;
+        pumpCmdInput.max = currentMaxPumpPct().toFixed(1);
       }
       if (pumpCmdSlider) {
         pumpCmdSlider.value = asText;
+        pumpCmdSlider.max = currentMaxPumpPct().toFixed(1);
       }
     }
-    updatePumpPreview(clamped, pumpHzFromPct(clamped));
   }
 
   async function apiJson(path, options = {}) {
@@ -708,12 +722,6 @@
     const powerPct = pump && Number.isFinite(pump.input_power_pct) ? pump.input_power_pct : null;
 
     const overviewHz = Number.isFinite(freqHz) ? freqHz : cmdHz;
-    const overviewPct =
-      Number.isFinite(freqPct) && freqPct >= 0
-        ? freqPct
-        : Number.isFinite(overviewHz) && Number.isFinite(pumpMaxFreqHz) && pumpMaxFreqHz > 0
-        ? (overviewHz / pumpMaxFreqHz) * 100
-        : null;
 
     if (overviewPumpSpeedEl) {
       overviewPumpSpeedEl.textContent = Number.isFinite(overviewHz)
@@ -721,9 +729,7 @@
         : '—';
     }
     if (overviewPumpSpeedSubEl) {
-      overviewPumpSpeedSubEl.textContent = Number.isFinite(overviewPct)
-        ? `${overviewPct.toFixed(1)} %`
-        : '—';
+      overviewPumpSpeedSubEl.textContent = '';
     }
 
     const running = Number.isFinite(freqHz) ? freqHz > 0.2 : cmdPct > 0.2;
@@ -749,7 +755,7 @@
     renderMetric(vfdVoltageEl, vfdVoltagePctEl, voltageV, 1, voltagePct);
     renderMetric(vfdPowerEl, vfdPowerPctEl, powerW, 1, powerPct);
     if (vfdPowerUnitEl) {
-      vfdPowerUnitEl.textContent = Number.isFinite(powerW) ? 'W' : '%';
+      vfdPowerUnitEl.textContent = 'W';
     }
 
     if (pumpPressureBeforeEl) {
@@ -1086,6 +1092,21 @@
     }
     userPumpDirty = true;
     syncPumpInputs(next, { force: true });
+  }
+
+  if (pumpOverspeedToggle) {
+    pumpOverspeedToggle.addEventListener('change', (event) => {
+      applyOverspeedToggle(event.target.checked);
+    });
+  }
+
+  if (pumpStopButton) {
+    pumpStopButton.addEventListener('click', () => {
+      userPumpDirty = false;
+      syncPumpInputs(0, { force: true });
+      sendCommand('PUMP 0');
+      setCommandStatus('Pump stop issued (0%)', 'info');
+    });
   }
 
   [pumpCmdSlider, pumpCmdInput].forEach((el) => {

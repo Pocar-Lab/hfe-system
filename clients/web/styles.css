@@ -136,6 +136,10 @@ header .brand {
   font-size: 0.95rem;
 }
 
+.overview-subvalue:empty {
+  display: none;
+}
+
 main {
   display: flex;
   flex-direction: column;
@@ -265,6 +269,25 @@ main {
 
 .metric-grid.metrics-three {
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.vfd-grid {
+  grid-template-columns: minmax(200px, 1fr) minmax(320px, 2fr);
+  align-items: stretch;
+  gap: 0;
+  column-gap: 16px;
+}
+
+.vfd-grid .power-block {
+  height: 100%;
+}
+
+.vfd-output-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 16px;
+  padding-left: 16px;
+  border-left: 1px solid var(--border-soft);
 }
 
 .metric-block {
@@ -646,13 +669,14 @@ button:active:not(:disabled) {
 .pump-pill {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 10px 12px;
+  gap: 6px;
+  padding: 14px 16px;
   border-radius: 10px;
   border: 1px solid var(--border-soft);
   background: var(--bg-primary);
   min-width: 160px;
   width: 100%;
+  justify-content: space-between;
 }
 
 .pill-label {
@@ -669,9 +693,9 @@ button:active:not(:disabled) {
 
 .pump-command-layout {
   display: grid;
-  grid-template-columns: minmax(320px, 380px) 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 16px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .pump-control-col {
@@ -679,20 +703,7 @@ button:active:not(:disabled) {
   flex-direction: column;
   gap: 12px;
   align-items: flex-start;
-}
-
-.pump-target-row {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  align-items: flex-start;
-}
-
-.pump-target-row label,
-.pump-target-inline label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  width: 100%;
 }
 
 .pump-control-col label {
@@ -700,35 +711,41 @@ button:active:not(:disabled) {
   flex-direction: column;
   gap: 4px;
   margin: 0;
+  width: 100%;
+}
+
+.pump-slider-row {
+  width: 100%;
+}
+
+.pump-input-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  flex-wrap: nowrap;
 }
 
 .pump-control-col input[type='range'] {
   width: 100%;
 }
 
+.pump-input-row .number-label {
+  flex: 0 0 50%;
+  min-width: 140px;
+}
+
+.pump-input-row .overspeed-toggle {
+  flex: 1 1 auto;
+  justify-content: flex-start;
+  margin-left: auto;
+  flex-direction: row;
+  align-items: center;
+}
+
 .pump-control-col input[type='number'] {
   width: 100%;
 }
-
-.pump-target-inline {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  width: 100%;
-  flex-wrap: wrap;
-}
-
-.pump-target-inline .number-label {
-  flex: 0 0 220px;
-}
-
-.pump-target-inline .overspeed-toggle {
-  margin-top: 0;
-  flex: 1 1 auto;
-  justify-content: flex-end;
-}
-
 .pump-note {
   margin: 4px 0;
   color: var(--text-secondary);
@@ -750,6 +767,11 @@ button:active:not(:disabled) {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  height: 100%;
+}
+
+.pump-status-col .pump-pill {
+  flex: 1 1 0;
 }
 
 .pump-form-actions {
@@ -764,6 +786,18 @@ button:active:not(:disabled) {
 .pump-form-actions button {
   flex: 1 1 0;
   width: 100%;
+}
+
+@media (max-width: 900px) {
+  .vfd-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .vfd-output-grid {
+    padding-left: 0;
+    border-left: none;
+    margin-top: 12px;
+  }
 }
 
 @media (max-width: 768px) {
