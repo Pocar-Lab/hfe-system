@@ -616,6 +616,17 @@ button:active:not(:disabled) {
   display: inline-block;
 }
 
+.pump-state {
+  font-size: 1.8rem;
+  font-weight: 600;
+  padding: 8px 12px;
+  border-radius: 8px;
+  display: inline-block;
+  min-width: 170px;
+  text-align: center;
+  width: 100%;
+}
+
 .valve-open {
   background: var(--valve-open-bg);
   color: var(--valve-open-text);
@@ -641,6 +652,7 @@ button:active:not(:disabled) {
   border: 1px solid var(--border-soft);
   background: var(--bg-primary);
   min-width: 160px;
+  width: 100%;
 }
 
 .pill-label {
@@ -657,7 +669,7 @@ button:active:not(:disabled) {
 
 .pump-command-layout {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: minmax(320px, 380px) 1fr;
   gap: 16px;
   align-items: start;
 }
@@ -665,17 +677,19 @@ button:active:not(:disabled) {
 .pump-control-col {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
+  align-items: flex-start;
 }
 
 .pump-target-row {
   display: flex;
-  gap: 12px;
-  align-items: center;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
 }
 
-.pump-target-row label {
-  flex: 1 1 25%;
+.pump-target-row label,
+.pump-target-inline label {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -696,6 +710,42 @@ button:active:not(:disabled) {
   width: 100%;
 }
 
+.pump-target-inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  flex-wrap: wrap;
+}
+
+.pump-target-inline .number-label {
+  flex: 0 0 220px;
+}
+
+.pump-target-inline .overspeed-toggle {
+  margin-top: 0;
+  flex: 1 1 auto;
+  justify-content: flex-end;
+}
+
+.pump-note {
+  margin: 4px 0;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.overspeed-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+
 .pump-status-col {
   display: flex;
   flex-direction: column;
@@ -705,9 +755,15 @@ button:active:not(:disabled) {
 .pump-form-actions {
   margin-top: 8px;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  align-items: flex-start;
+  flex-direction: row;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+}
+
+.pump-form-actions button {
+  flex: 1 1 0;
+  width: 100%;
 }
 
 @media (max-width: 768px) {
