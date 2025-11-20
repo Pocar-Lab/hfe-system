@@ -96,16 +96,19 @@
             <form id="pump-command-form">
               <div class="pump-command-layout">
                 <div class="pump-control-col">
-                  <label>
-                    Target (% of max)
-                    <input type="range" id="pump-command-slider" min="0" max="100" step="0.1" value="0" />
-                    <span class="form-hint">0–100% analog (100% = 71.7 Hz ≈ 2150 rpm ≈ 4.0 L/min).</span>
-                  </label>
-                  <label>
-                    Target (%)
-                    <input type="number" id="pump-command-input" min="0" max="100" step="0.1" inputmode="decimal" value="0" />
-                    <span class="form-hint">Use the number box for fine adjustments.</span>
-                  </label>
+                  <div class="pump-target-row">
+                    <label class="slider-label">
+                      Target (% of max)
+                      <input type="range" id="pump-command-slider" min="0" max="100" step="0.1" value="0" />
+                    </label>
+                    <label class="number-label" aria-label="Target (%)">
+                      <input type="number" id="pump-command-input" min="0" max="100" step="0.1" inputmode="decimal" value="0" />
+                    </label>
+                  </div>
+                  <p class="muted pump-hint">0–100% maps to 0–71.7 Hz (≈2150 rpm, ≈4.0 L/min). Above 60 Hz is overspeed; use cautiously.</p>
+                  <div class="form-actions pump-form-actions">
+                    <button type="submit" class="primary half-width">Set Speed</button>
+                  </div>
                 </div>
                 <div class="pump-status-col">
                   <div class="pump-pill" id="pump-run-state">Stopped</div>
@@ -120,11 +123,7 @@
                   </div>
                 </div>
               </div>
-              <div class="form-actions pump-form-actions">
-                <button type="submit" class="primary">Set Speed</button>
-                <p id="pump-command-preview" class="muted">Command: 0.0 % (0.00 Hz)</p>
-              </div>
-            </div>
+            </form>
           </div>
         </section>
 

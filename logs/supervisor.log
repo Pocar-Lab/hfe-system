@@ -1,11 +1,121 @@
 INFO: Auth required: False; token prefix: (none)
-INFO:     Started server process [550878]
+INFO:     Started server process [584344]
 INFO:     Waiting for application startup.
-INFO: Serial connected: /dev/ttyACM0 @ 115200
+ERROR: Serial unavailable on /dev/ttyACM0: [Errno 2] could not open port /dev/ttyACM0: [Errno 2] No such file or directory: '/dev/ttyACM0'
+INFO: Serial connected: /dev/ttyACM1 @ 115200
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-INFO:     127.0.0.1:48230 - "GET /ui/ HTTP/1.1" 200 OK
-INFO:     127.0.0.1:48230 - "GET /api/logging/status HTTP/1.1" 200 OK
-INFO:     ('127.0.0.1', 48246) - "WebSocket /ws" [accepted]
+INFO:     127.0.0.1:43234 - "GET / HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:43234 - "GET /ui/ HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:43246 - "GET /ui/styles.css HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:43250 - "GET /ui/app.js HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:43234 - "GET /api/logging/status HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 43264) - "WebSocket /ws" [accepted]
 INFO:     connection open
 INFO:     connection closed
+INFO:     127.0.0.1:43246 - "GET /ui/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43250 - "GET /ui/styles.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43234 - "GET /ui/app.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43246 - "GET /api/logging/status HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 43270) - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:44994 - "POST /api/command HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58818 - "POST /api/command HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36368 - "POST /api/command HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36368 - "POST /api/command HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48582 - "POST /api/command HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41614 - "POST /api/command HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:49462 - "GET /ui/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49462 - "GET /ui/styles.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49468 - "GET /ui/app.js HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:49462 - "GET /api/logging/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49484 - "GET /apple-touch-icon-precomposed.png HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:49486 - "GET /apple-touch-icon.png HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:49488 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+INFO:     ('127.0.0.1', 49502) - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:46484 - "GET /ui/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46484 - "GET /ui/styles.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46496 - "GET /ui/app.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46484 - "GET /api/logging/status HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 46500) - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:36382 - "GET /ui/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36382 - "GET /ui/styles.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36398 - "GET /ui/app.js HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:36382 - "GET /api/logging/status HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 36400) - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:49630 - "GET /ui/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49630 - "GET /ui/styles.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49630 - "GET /ui/app.js HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:49630 - "GET /api/logging/status HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 49646) - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:59572 - "GET /ui/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59572 - "GET /ui/styles.css HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:59578 - "GET /ui/app.js HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:59572 - "GET /api/logging/status HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 59590) - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:54450 - "GET /ui/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54450 - "GET /ui/styles.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54456 - "GET /ui/app.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54450 - "GET /api/logging/status HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 54472) - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:42576 - "GET /ui/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42576 - "GET /ui/styles.css HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:42576 - "GET /api/logging/status HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 42582) - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:42576 - "GET /ui/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42576 - "GET /api/logging/status HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 42290) - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:42296 - "GET /ui/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42296 - "GET /ui/styles.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42312 - "GET /ui/app.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42296 - "GET /api/logging/status HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 42316) - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:51224 - "GET /ui/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51224 - "GET /ui/styles.css HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:51224 - "GET /api/logging/status HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 51226) - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:60420 - "GET /ui/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60420 - "GET /ui/styles.css HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:60420 - "GET /ui/app.js HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:60420 - "GET /api/logging/status HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 60436) - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:60420 - "GET /ui/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60420 - "GET /ui/styles.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60438 - "GET /ui/app.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60420 - "GET /api/logging/status HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 60440) - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:60624 - "GET /ui/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60624 - "GET /api/logging/status HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 60638) - "WebSocket /ws" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:40866 - "GET /ui/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40866 - "GET /ui/styles.css HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:40866 - "GET /api/logging/status HTTP/1.1" 200 OK
+INFO:     ('127.0.0.1', 40876) - "WebSocket /ws" [accepted]
+INFO:     connection open

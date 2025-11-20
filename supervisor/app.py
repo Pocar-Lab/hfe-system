@@ -6,6 +6,7 @@ import csv
 import json
 import math
 import asyncio
+import threading
 import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -13,6 +14,7 @@ from datetime import datetime
 from typing import Optional
 
 import yaml
+from glob import glob
 from fastapi import (
     FastAPI,
     WebSocket,
@@ -86,6 +88,18 @@ def parse_serial_payload(raw: bytes) -> Optional[dict]:
     except json.JSONDecodeError:
         msg = None
     if isinstance(msg, dict):
+        if "type" not in msg:
+            msg["type"] = "telemetry"
+        temps_msg = msg.get("temps")
+        if isinstance(temps_msg, list) and "tC" not in msg:
+            for item in temps_msg:
+                try:
+                    val = float(item)
+                except Exception:
+                    continue
+                if math.isfinite(val):
+                    msg["tC"] = val
+                    break
         return msg
     if text.startswith("time_s"):
         # Header line; ignore after logging
@@ -135,6 +149,23 @@ DETECT_ZERO_AS_NC = True
 
 MAX_LOG_SENSORS = 10
 RAW_LOG_DIR = REPO / "data" / "raw"
+
+def candidate_serial_ports() -> list[str]:
+    ports: list[str] = []
+    cfg_port = str(CFG.get("serial", {}).get("port") or "").strip()
+    if cfg_port:
+        ports.append(cfg_port)
+    for pattern in ("/dev/ttyACM*", "/dev/ttyUSB*"):
+        for p in sorted(glob(pattern)):
+            ports.append(p)
+    # de-dup while preserving order
+    seen = set()
+    unique = []
+    for p in ports:
+        if p not in seen:
+            unique.append(p)
+            seen.add(p)
+    return unique
 
 
 def _init_logging_state(state) -> None:
@@ -263,7 +294,12 @@ try:
     import serial_asyncio  # provided by pyserial-asyncio
 except Exception:
     serial_asyncio = None
-    log.warning("pyserial-asyncio not available; running without serial")
+    log.warning("pyserial-asyncio not available; running without serial asyncio support")
+
+try:
+    import serial  # pyserial
+except Exception:
+    serial = None
 
 # ───────────────────── WS clients registry ─────────────────────
 clients: set[WebSocket] = set()
@@ -284,6 +320,10 @@ async def lifespan(app: FastAPI):
     app.state.q_live: asyncio.Queue = asyncio.Queue(maxsize=10000)
     app.state.tasks: list[asyncio.Task] = []
     app.state.ser_transport = None
+    app.state.ser_thread = None
+    app.state.ser_thread_stop = threading.Event()
+    app.state.ser_handle = None
+    app.state.ser_lock = threading.Lock()
     _init_logging_state(app.state)
 
     async def broadcaster():
@@ -311,58 +351,132 @@ async def lifespan(app: FastAPI):
         import time, random
         while True:
             await asyncio.sleep(1.0)
+            pump_cmd_pct = 0.0  # keep stable to avoid UI confusion when dummy is used
+            pump_freq_pct = 0.0
+            pump_freq_hz = 0.0
+            temps = [24.5 + 1.5 * (2.0 * random.random() - 1.0) for _ in range(4)]
+            temps += [None] * (MAX_LOG_SENSORS - len(temps))
             app.state.q_live.put_nowait(
                 {
                     "type": "telemetry",
                     "t": time.time(),
-                    "tC": 24.5 + 1.5 * (2.0 * random.random() - 1.0),
+                    "tC": temps[0],
+                    "temps": temps,
                     "valve": int(random.random() > 0.5),
                     "fault": False,
+                    "pump": {
+                        "cmd_pct": pump_cmd_pct,
+                        "cmd_hz": pump_cmd_pct / 100.0 * 60.0,
+                        "freq_hz": pump_freq_hz,
+                        "freq_pct": pump_freq_pct,
+                        "output_current_a": 0.5 + 0.1 * (random.random() - 0.5),
+                        "output_current_pct": 18.0 + 3.0 * (random.random() - 0.5),
+                        "output_voltage_v": 12.0 + 0.5 * (random.random() - 0.5),
+                        "output_voltage_pct": 5.0 + 0.2 * (random.random() - 0.5),
+                        "input_power_w": 30.0 + 5.0 * (random.random() - 0.5),
+                        "input_power_pct": 8.0 + 2.0 * (random.random() - 0.5),
+                        "max_freq_hz": 60.0,
+                    },
                 }
             )
 
     # Try to open serial (if library present)
+    baud = int(CFG.get("serial", {}).get("baudrate", 115200))
+    connected = False
     if serial_asyncio:
-        try:
-            loop = asyncio.get_running_loop()
-            port = CFG["serial"]["port"]
-            baud = int(CFG["serial"]["baudrate"])
+        loop = asyncio.get_running_loop()
 
-            class Proto(asyncio.Protocol):
-                def __init__(self, q: asyncio.Queue):
-                    self.q = q
-                    self.buf = b""
+        class Proto(asyncio.Protocol):
+            def __init__(self, q: asyncio.Queue):
+                self.q = q
+                self.buf = b""
 
-                def data_received(self, data: bytes):
-                    self.buf += data
-                    while b"\n" in self.buf:
-                        line, self.buf = self.buf.split(b"\n", 1)
-                        payload = parse_serial_payload(line)
+            def data_received(self, data: bytes):
+                self.buf += data
+                while b"\n" in self.buf:
+                    line, self.buf = self.buf.split(b"\n", 1)
+                    payload = parse_serial_payload(line)
+                    if payload is None:
+                        continue
+                    try:
+                        self.q.put_nowait(payload)
+                    except asyncio.QueueFull:
+                        try:
+                            _ = self.q.get_nowait()
+                            self.q.task_done()
+                            self.q.put_nowait(payload)
+                        except Exception:
+                            pass
+
+        for port in candidate_serial_ports():
+            try:
+                transport, _ = await serial_asyncio.create_serial_connection(
+                    loop, lambda: Proto(app.state.q_live), port, baudrate=baud
+                )
+                app.state.ser_transport = transport
+                app.state.ser_handle = transport
+                connected = True
+                log.info("Serial connected: %s @ %s", port, baud)
+                break
+            except Exception as e:
+                log.error("Serial unavailable on %s: %s", port, e)
+
+    if not connected and serial:
+        # Fallback: blocking reader thread using pyserial
+        def serial_reader(stop_evt: threading.Event, q: asyncio.Queue, port: str):
+            try:
+                with serial.Serial(port, baud, timeout=0.2) as ser:
+                    app.state.ser_handle = ser
+                    log.info("Serial (thread) connected: %s @ %s", port, baud)
+                    buf = b""
+                    while not stop_evt.is_set():
+                        try:
+                            chunk = ser.read_until(b"\n")
+                        except Exception:
+                            continue
+                        if not chunk:
+                            continue
+                        payload = parse_serial_payload(chunk)
                         if payload is None:
                             continue
                         try:
-                            self.q.put_nowait(payload)
+                            q.put_nowait(payload)
                         except asyncio.QueueFull:
                             try:
-                                _ = self.q.get_nowait()
-                                self.q.task_done()
-                                self.q.put_nowait(payload)
+                                _ = q.get_nowait()
+                                q.task_done()
+                                q.put_nowait(payload)
                             except Exception:
                                 pass
+                    app.state.ser_handle = None
+            except Exception as exc:
+                log.error("Serial thread failed on %s: %s", port, exc)
 
-            transport, _ = await serial_asyncio.create_serial_connection(
-                loop, lambda: Proto(app.state.q_live), port, baudrate=baud
-            )
-            app.state.ser_transport = transport
-            log.info("Serial connected: %s @ %s", port, baud)
+        for port in candidate_serial_ports():
+            try:
+                app.state.ser_thread_stop.clear()
+                app.state.ser_thread = threading.Thread(
+                    target=serial_reader,
+                    args=(app.state.ser_thread_stop, app.state.q_live, port),
+                    daemon=True,
+                )
+                app.state.ser_thread.start()
+                connected = True
+                break
+            except Exception as e:
+                log.error("Serial unavailable (thread) on %s: %s", port, e)
 
-        except Exception as e:
-            log.error("Serial unavailable: %s. Starting API without hardware.", e)
+    if not connected:
+        log.error("Serial unavailable; no telemetry will be broadcast. Candidates tried: %s", candidate_serial_ports())
 
     # Start broadcaster and (if needed) dummy feeder
     app.state.tasks.append(asyncio.create_task(broadcaster()))
-    if app.state.ser_transport is None:
-        app.state.tasks.append(asyncio.create_task(dummy_feeder()))
+    allow_dummy = os.getenv("SUP_ALLOW_DUMMY", "0").lower() in {"1", "true", "yes"}
+    if app.state.ser_transport is None and app.state.ser_thread is None:
+        if allow_dummy:
+          app.state.tasks.append(asyncio.create_task(dummy_feeder()))
+        else:
+          log.error("Serial unavailable and SUP_ALLOW_DUMMY is not enabled; no telemetry will be broadcast.")
 
     # Hand control to FastAPI
     try:
@@ -378,6 +492,13 @@ async def lifespan(app: FastAPI):
                 app.state.ser_transport.close()
             except Exception:
                 pass
+        if app.state.ser_thread:
+            try:
+                app.state.ser_thread_stop.set()
+                app.state.ser_thread.join(timeout=1.0)
+            except Exception:
+                pass
+        app.state.ser_handle = None
 
 
 # ───────────────────────── FastAPI app ─────────────────────────
@@ -418,9 +539,21 @@ async def api_command(body: dict, authorization: Optional[str] = Header(default=
             return JSONResponse({"ok": True})
         except Exception as e:
             raise HTTPException(500, f"Serial write failed: {e}")
-    else:
-        # No serial available; return 503 but echo the command for debugging
-        return JSONResponse({"ok": False, "echo": body, "detail": "serial unavailable"}, status_code=503)
+
+    # Thread/pyserial path
+    ser_handle = getattr(app.state, "ser_handle", None)
+    ser_lock = getattr(app.state, "ser_lock", None)
+    if ser_handle and ser_lock:
+        with ser_lock:
+            try:
+                ser_handle.write(line)
+                ser_handle.flush()
+                return JSONResponse({"ok": True})
+            except Exception as e:
+                raise HTTPException(500, f"Serial write failed: {e}")
+
+    # No serial available; return 503 but echo the command for debugging
+    return JSONResponse({"ok": False, "echo": body, "detail": "serial unavailable"}, status_code=503)
 
 
 @app.get("/api/logging/status")
