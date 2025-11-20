@@ -130,6 +130,12 @@ header .brand {
   color: #2ecc71;
 }
 
+.overview-subvalue {
+  margin: 4px 0 0 0;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+
 main {
   display: flex;
   flex-direction: column;
@@ -289,6 +295,11 @@ main {
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.metric-subvalue {
+  font-size: 0.95rem;
+  color: var(--text-secondary);
 }
 
 .drive-status-grid {
@@ -491,6 +502,19 @@ main {
   color: var(--text-primary);
 }
 
+.form-row input[type='range'] {
+  padding: 0;
+}
+
+.form-row input[type='range']::-webkit-slider-thumb {
+  background: var(--button-primary);
+}
+
+.form-row input[type='range']::-moz-range-thumb {
+  background: var(--button-primary);
+  border: none;
+}
+
 .form-hint {
   margin-top: 4px;
   font-size: 0.8rem;
@@ -600,6 +624,67 @@ button:active:not(:disabled) {
 .valve-closed {
   background: var(--valve-closed-bg);
   color: var(--valve-closed-text);
+}
+
+.pump-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.pump-pill {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-primary);
+  min-width: 160px;
+}
+
+.pill-label {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.pill-sub {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.pump-command-layout {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.pump-control-col label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.pump-control-col input[type='range'] {
+  width: 100%;
+}
+
+.pump-status-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pump-form-actions {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
 }
 
 @media (max-width: 768px) {

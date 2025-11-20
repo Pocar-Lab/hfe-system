@@ -49,8 +49,9 @@
           </article>
           <article class="overview-card">
             <h3>Pump Speed</h3>
-            <p class="overview-value">—</p>
-            <p class="overview-hint">Displays the pump's RPM once telemetry is available.</p>
+            <p id="overview-pump-speed" class="overview-value">—</p>
+            <p id="overview-pump-speed-sub" class="overview-subvalue muted">—</p>
+            <p class="overview-hint">Displays the pump's frequency once telemetry is available.</p>
           </article>
           <article class="overview-card">
             <h3>LN Valve</h3>
@@ -82,6 +83,83 @@
       </div>
 
       <div class="page-panel" id="page-pump" data-page-panel="pump">
+        <section class="hero-card">
+          <h2>Pump Control</h2>
+          <p>
+            Set the analog command for the circulation pump and watch live drive telemetry. Commands map 0–100% to 0–71.7 Hz (≈2150 rpm, ≈4.0 L/min HFE).
+          </p>
+        </section>
+
+        <section class="pump-section">
+          <div class="stat-card">
+            <h2>Pump Command</h2>
+            <form id="pump-command-form">
+              <div class="pump-command-layout">
+                <div class="pump-control-col">
+                  <label>
+                    Target (% of max)
+                    <input type="range" id="pump-command-slider" min="0" max="100" step="0.1" value="0" />
+                    <span class="form-hint">0–100% analog (100% = 71.7 Hz ≈ 2150 rpm ≈ 4.0 L/min).</span>
+                  </label>
+                  <label>
+                    Target (%)
+                    <input type="number" id="pump-command-input" min="0" max="100" step="0.1" inputmode="decimal" value="0" />
+                    <span class="form-hint">Use the number box for fine adjustments.</span>
+                  </label>
+                </div>
+                <div class="pump-status-col">
+                  <div class="pump-pill" id="pump-run-state">Stopped</div>
+                  <div class="pump-pill">
+                    <span class="pill-label">Commanded</span>
+                    <span id="pump-cmd-hz">—</span>
+                  </div>
+                  <div class="pump-pill">
+                    <span class="pill-label">Est. RPM / Flow</span>
+                    <span id="pump-cmd-rpm">—</span>
+                    <span id="pump-cmd-flow" class="pill-sub">—</span>
+                  </div>
+                </div>
+              </div>
+              <div class="form-actions pump-form-actions">
+                <button type="submit" class="primary">Set Speed</button>
+                <p id="pump-command-preview" class="muted">Command: 0.0 % (0.00 Hz)</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="pump-section">
+          <div class="stat-card">
+            <h2>VFD Monitors</h2>
+            <div class="metric-grid metrics-three">
+              <div class="metric-block">
+                <span class="metric-label">Output Frequency</span>
+                <span id="vfd-frequency" class="metric-value">—</span>
+                <span id="vfd-frequency-pct" class="metric-subvalue">—</span>
+                <span id="vfd-frequency-unit" class="metric-unit">Hz</span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">Output Current</span>
+                <span id="vfd-current" class="metric-value">—</span>
+                <span id="vfd-current-pct" class="metric-subvalue">—</span>
+                <span id="vfd-current-unit" class="metric-unit">A</span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">Output Voltage</span>
+                <span id="vfd-voltage" class="metric-value">—</span>
+                <span id="vfd-voltage-pct" class="metric-subvalue">—</span>
+                <span id="vfd-voltage-unit" class="metric-unit">V</span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">Input Power</span>
+                <span id="vfd-power" class="metric-value">—</span>
+                <span id="vfd-power-pct" class="metric-subvalue">—</span>
+                <span id="vfd-power-unit" class="metric-unit">W</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <section class="pump-section">
           <div class="stat-card">
             <h2>Loop Pressures</h2>
@@ -97,86 +175,6 @@
                 <span id="pump-pressure-after-unit" class="metric-unit">psi</span>
               </div>
             </div>
-          </div>
-        </section>
-
-        <section class="pump-section">
-          <div class="stat-card">
-            <h2>VFD Monitors</h2>
-            <div class="metric-grid metrics-three">
-              <div class="metric-block">
-                <span class="metric-label">Output Frequency</span>
-                <span id="vfd-frequency" class="metric-value">—</span>
-                <span id="vfd-frequency-unit" class="metric-unit">Hz</span>
-              </div>
-              <div class="metric-block">
-                <span class="metric-label">Output Current</span>
-                <span id="vfd-current" class="metric-value">—</span>
-                <span id="vfd-current-unit" class="metric-unit">A</span>
-              </div>
-              <div class="metric-block">
-                <span class="metric-label">Output Voltage</span>
-                <span id="vfd-voltage" class="metric-value">—</span>
-                <span id="vfd-voltage-unit" class="metric-unit">V</span>
-              </div>
-              <div class="metric-block">
-                <span class="metric-label">Input Power</span>
-                <span id="vfd-power" class="metric-value">—</span>
-                <span id="vfd-power-unit" class="metric-unit">W</span>
-              </div>
-              <div class="metric-block">
-                <span class="metric-label">DC Bus</span>
-                <span id="vfd-bus" class="metric-value">—</span>
-                <span id="vfd-bus-unit" class="metric-unit">V</span>
-              </div>
-              <div class="metric-block">
-                <span class="metric-label">Analog Monitor</span>
-                <span id="vfd-analog-channel" class="metric-value">—</span>
-                <span id="vfd-analog-unit" class="metric-unit"></span>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section class="pump-section">
-          <div class="stat-card">
-            <h2>PID Signals</h2>
-            <div class="metric-grid metrics-three">
-              <div class="metric-block">
-                <span class="metric-label">Set Value (SV)</span>
-                <span id="vfd-pid-sv" class="metric-value">—</span>
-              </div>
-              <div class="metric-block">
-                <span class="metric-label">Measured (FB)</span>
-                <span id="vfd-pid-feedback" class="metric-value">—</span>
-              </div>
-              <div class="metric-block">
-                <span class="metric-label">Motor Output (MV)</span>
-                <span id="vfd-pid-mv" class="metric-value">—</span>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section class="pump-section">
-          <div class="stat-card">
-            <h2>Drive Status</h2>
-            <div class="drive-status-grid">
-              <div id="vfd-run-status" class="drive-chip" data-state="unknown">
-                <span class="drive-label">Run / At Speed</span>
-                <span class="drive-value">—</span>
-              </div>
-              <div id="vfd-warning-status" class="drive-chip" data-state="unknown">
-                <span class="drive-label">Overload Warning</span>
-                <span class="drive-value">—</span>
-              </div>
-              <div id="vfd-fault-status" class="drive-chip" data-state="unknown">
-                <span class="drive-label">Fault / Trip</span>
-                <span class="drive-value">—</span>
-              </div>
-            </div>
-            <p id="vfd-fault-detail" class="muted drive-detail">No active fault.</p>
-            <p id="vfd-display" class="drive-display">—</p>
           </div>
         </section>
       </div>

@@ -5,6 +5,8 @@
   const MAX_POINTS = 900;
   const WINDOW_MINUTES = 15;
   const SETPOINT = 25.0;
+  const PUMP_MAX_CMD_PCT = 100.0;
+  const PUMP_MAX_FREQ_HZ = 71.7;
 
   const params = new URLSearchParams(window.location.search);
   const tokenParam = params.get('token') || '';
@@ -19,6 +21,28 @@
   const commandStatusEl = document.getElementById('command-status');
   const valveStateEl = document.getElementById('valve-state');
   const modeStateEl = document.getElementById('mode-state');
+  // pump overview + controls
+  const overviewPumpSpeedEl = document.getElementById('overview-pump-speed');
+  const overviewPumpSpeedSubEl = document.getElementById('overview-pump-speed-sub');
+  const pumpCmdForm = document.getElementById('pump-command-form');
+  const pumpCmdInput = document.getElementById('pump-command-input');
+  const pumpCmdSlider = document.getElementById('pump-command-slider');
+  const pumpCmdPreview = document.getElementById('pump-command-preview');
+  const pumpRunStateEl = document.getElementById('pump-run-state');
+  const pumpCmdHzEl = document.getElementById('pump-cmd-hz');
+  const pumpCmdRpmEl = document.getElementById('pump-cmd-rpm');
+  const pumpCmdFlowEl = document.getElementById('pump-cmd-flow');
+  const pumpPressureBeforeEl = document.getElementById('pump-pressure-before');
+  const pumpPressureAfterEl = document.getElementById('pump-pressure-after');
+  const vfdFrequencyEl = document.getElementById('vfd-frequency');
+  const vfdFrequencyPctEl = document.getElementById('vfd-frequency-pct');
+  const vfdCurrentEl = document.getElementById('vfd-current');
+  const vfdCurrentPctEl = document.getElementById('vfd-current-pct');
+  const vfdVoltageEl = document.getElementById('vfd-voltage');
+  const vfdVoltagePctEl = document.getElementById('vfd-voltage-pct');
+  const vfdPowerEl = document.getElementById('vfd-power');
+  const vfdPowerPctEl = document.getElementById('vfd-power-pct');
+  const vfdPowerUnitEl = document.getElementById('vfd-power-unit');
   const sensorCountEl = document.getElementById('sensor-count');
   const validCountEl = document.getElementById('valid-count');
   const avgTempEl = document.getElementById('avg-temp');
@@ -120,6 +144,9 @@
 
   let currentSetpoint = SETPOINT;
   let currentHysteresis = 0.5;
+  let pumpMaxFreqHz = PUMP_MAX_FREQ_HZ;
+  let lastPumpCmdPct = 0;
+  let userPumpDirty = false;
 
   function setpointLabel() {
     return `Set-point (${currentSetpoint.toFixed(1)} °C)`;
@@ -451,11 +478,58 @@
   }
 
   function setCommandStatus(text, tone = 'normal') {
-    if (!['alert', 'warn', 'error'].includes(tone)) {
+    if (!commandStatusEl) {
       return;
     }
     commandStatusEl.textContent = text;
-    commandStatusEl.dataset.tone = tone;
+    commandStatusEl.dataset.tone = tone || 'normal';
+  }
+
+  function renderMetric(mainEl, subEl, value, digits = 2, pctValue = null) {
+    if (mainEl) {
+      mainEl.textContent = Number.isFinite(value) ? value.toFixed(digits) : '—';
+    }
+    if (subEl) {
+      subEl.textContent = Number.isFinite(pctValue) ? `${pctValue.toFixed(1)} %` : '—';
+    }
+  }
+
+  function clampPumpPct(value) {
+    if (!Number.isFinite(value)) {
+      return 0;
+    }
+    return Math.min(Math.max(value, 0), PUMP_MAX_CMD_PCT);
+  }
+
+  function pumpHzFromPct(pct, maxFreq = pumpMaxFreqHz) {
+    if (!Number.isFinite(pct) || !Number.isFinite(maxFreq) || maxFreq <= 0) {
+      return NaN;
+    }
+    return (pct / 100) * maxFreq;
+  }
+
+  function updatePumpPreview(pct, targetHz) {
+    if (!pumpCmdPreview) {
+      return;
+    }
+    const pctText = Number.isFinite(pct) ? pct.toFixed(2) : '—';
+    const hzText = Number.isFinite(targetHz) ? targetHz.toFixed(2) : '—';
+    pumpCmdPreview.textContent = `Command: ${pctText} % (${hzText} Hz)`;
+  }
+
+  function syncPumpInputs(pct, { force = false } = {}) {
+    const clamped = clampPumpPct(pct);
+    lastPumpCmdPct = clamped;
+    const asText = clamped.toFixed(2);
+    if (!userPumpDirty || force) {
+      if (pumpCmdInput) {
+        pumpCmdInput.value = asText;
+      }
+      if (pumpCmdSlider) {
+        pumpCmdSlider.value = asText;
+      }
+    }
+    updatePumpPreview(clamped, pumpHzFromPct(clamped));
   }
 
   async function apiJson(path, options = {}) {
@@ -603,6 +677,95 @@
     chart.options.scales.x.max = WINDOW_MINUTES;
   }
 
+  function updatePumpTelemetry(pumpData) {
+    const pump = pumpData && typeof pumpData === 'object' ? pumpData : null;
+    if (pump && Number.isFinite(pump.max_freq_hz) && pump.max_freq_hz > 0) {
+      pumpMaxFreqHz = pump.max_freq_hz;
+    }
+
+    const cmdPct = pump && Number.isFinite(pump.cmd_pct) ? clampPumpPct(pump.cmd_pct) : lastPumpCmdPct;
+    const cmdHz =
+      pump && Number.isFinite(pump.cmd_hz) ? pump.cmd_hz : pumpHzFromPct(cmdPct, pumpMaxFreqHz);
+    if (!userPumpDirty) {
+      syncPumpInputs(cmdPct, { force: false });
+    }
+
+    const freqHz = pump && Number.isFinite(pump.freq_hz) ? pump.freq_hz : null;
+    const freqPct =
+      pump && Number.isFinite(pump.freq_pct)
+        ? pump.freq_pct
+        : Number.isFinite(freqHz) && Number.isFinite(pumpMaxFreqHz) && pumpMaxFreqHz > 0
+        ? (freqHz / pumpMaxFreqHz) * 100
+        : null;
+
+    const currentA = pump && Number.isFinite(pump.output_current_a) ? pump.output_current_a : null;
+    const currentPct =
+      pump && Number.isFinite(pump.output_current_pct) ? pump.output_current_pct : null;
+    const voltageV = pump && Number.isFinite(pump.output_voltage_v) ? pump.output_voltage_v : null;
+    const voltagePct =
+      pump && Number.isFinite(pump.output_voltage_pct) ? pump.output_voltage_pct : null;
+    const powerW = pump && Number.isFinite(pump.input_power_w) ? pump.input_power_w : null;
+    const powerPct = pump && Number.isFinite(pump.input_power_pct) ? pump.input_power_pct : null;
+
+    const overviewHz = Number.isFinite(freqHz) ? freqHz : cmdHz;
+    const overviewPct =
+      Number.isFinite(freqPct) && freqPct >= 0
+        ? freqPct
+        : Number.isFinite(overviewHz) && Number.isFinite(pumpMaxFreqHz) && pumpMaxFreqHz > 0
+        ? (overviewHz / pumpMaxFreqHz) * 100
+        : null;
+
+    if (overviewPumpSpeedEl) {
+      overviewPumpSpeedEl.textContent = Number.isFinite(overviewHz)
+        ? `${overviewHz.toFixed(2)} Hz`
+        : '—';
+    }
+    if (overviewPumpSpeedSubEl) {
+      overviewPumpSpeedSubEl.textContent = Number.isFinite(overviewPct)
+        ? `${overviewPct.toFixed(1)} %`
+        : '—';
+    }
+
+    const running = Number.isFinite(freqHz) ? freqHz > 0.2 : cmdPct > 0.2;
+    if (pumpRunStateEl) {
+      pumpRunStateEl.textContent = running ? 'Running' : 'Stopped';
+      pumpRunStateEl.classList.toggle('valve-open', running);
+      pumpRunStateEl.classList.toggle('valve-closed', !running);
+    }
+    if (pumpCmdHzEl) {
+      pumpCmdHzEl.textContent = Number.isFinite(cmdHz) ? `${cmdHz.toFixed(2)} Hz` : '—';
+    }
+    if (pumpCmdRpmEl) {
+      const estRpm = Number.isFinite(cmdHz) && pumpMaxFreqHz > 0 ? (cmdHz / pumpMaxFreqHz) * 2150 : null;
+      pumpCmdRpmEl.textContent = Number.isFinite(estRpm) ? `${estRpm.toFixed(0)} rpm` : '—';
+    }
+    if (pumpCmdFlowEl) {
+      const estFlow = Number.isFinite(cmdHz) && pumpMaxFreqHz > 0 ? (cmdHz / pumpMaxFreqHz) * 4.0 : null;
+      pumpCmdFlowEl.textContent = Number.isFinite(estFlow) ? `${estFlow.toFixed(2)} L/min (est.)` : '—';
+    }
+
+    renderMetric(vfdFrequencyEl, vfdFrequencyPctEl, freqHz, 2, freqPct);
+    renderMetric(vfdCurrentEl, vfdCurrentPctEl, currentA, 2, currentPct);
+    renderMetric(vfdVoltageEl, vfdVoltagePctEl, voltageV, 1, voltagePct);
+    renderMetric(vfdPowerEl, vfdPowerPctEl, powerW, 1, powerPct);
+    if (vfdPowerUnitEl) {
+      vfdPowerUnitEl.textContent = Number.isFinite(powerW) ? 'W' : '%';
+    }
+
+    if (pumpPressureBeforeEl) {
+      const beforePsi =
+        pump && Number.isFinite(pump.pressure_before_psi) ? pump.pressure_before_psi : null;
+      pumpPressureBeforeEl.textContent = Number.isFinite(beforePsi)
+        ? beforePsi.toFixed(2)
+        : '—';
+    }
+    if (pumpPressureAfterEl) {
+      const afterPsi =
+        pump && Number.isFinite(pump.pressure_after_psi) ? pump.pressure_after_psi : null;
+      pumpPressureAfterEl.textContent = Number.isFinite(afterPsi) ? afterPsi.toFixed(2) : '—';
+    }
+  }
+
   function handleTelemetry(data) {
     const tempsRaw = Array.isArray(data.temps)
       ? data.temps
@@ -641,6 +804,8 @@
       tMin -= overflow;
     }
 
+    const pump = data && typeof data.pump === 'object' ? data.pump : null;
+
     const valve = Number.isFinite(data.valve) ? Number(data.valve) : 0;
 
     const valveOpen = Boolean(valve);
@@ -678,6 +843,7 @@
       valve,
       modeChar,
     };
+    updatePumpTelemetry(pump);
     updateSensorStats();
     maybeRunAutoValve(valveOpen);
 
@@ -913,6 +1079,49 @@
     });
   });
 
+  function pumpInputChanged(event) {
+    const next = parseFloat(event?.target?.value || '0');
+    if (!Number.isFinite(next)) {
+      return;
+    }
+    userPumpDirty = true;
+    syncPumpInputs(next, { force: true });
+  }
+
+  [pumpCmdSlider, pumpCmdInput].forEach((el) => {
+    if (el) {
+      el.addEventListener('input', pumpInputChanged);
+    }
+  });
+
+  if (pumpCmdForm) {
+    pumpCmdForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const desiredPct = clampPumpPct(
+        parseFloat(
+          (pumpCmdInput && pumpCmdInput.value) ||
+            (pumpCmdSlider && pumpCmdSlider.value) ||
+            `${lastPumpCmdPct}`,
+        ),
+      );
+      const desiredHz = pumpHzFromPct(desiredPct);
+      try {
+        setCommandStatus('Setting pump speed…', 'info');
+        await apiJson('/api/command', {
+          method: 'POST',
+          body: JSON.stringify({ cmd: `PUMP ${desiredPct.toFixed(2)}` }),
+        });
+        userPumpDirty = false;
+        syncPumpInputs(desiredPct, { force: true });
+        const hzText = Number.isFinite(desiredHz) ? desiredHz.toFixed(2) : '?';
+        setCommandStatus(`Pump set to ${desiredPct.toFixed(2)} % (${hzText} Hz)`, 'success');
+      } catch (err) {
+        console.error('Pump command failed', err);
+        setCommandStatus(`Pump command failed: ${err.message}`, 'error');
+      }
+    });
+  }
+
   if (setpointForm) {
     setpointForm.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -996,6 +1205,7 @@
     telemetryInput.value = '1000';
   }
 
+  syncPumpInputs(lastPumpCmdPct, { force: true });
   renderSensorCheckboxes(0);
 
   updateLoggingStatusLabel();
