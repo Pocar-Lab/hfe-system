@@ -8,6 +8,12 @@
   const PUMP_MAX_CMD_PCT = 100.0;
   const PUMP_MAX_FREQ_HZ = 71.7;
   const PUMP_SAFE_MAX_HZ = 60.0;
+  const FLUID_REFERENCE = {
+    name: 'HFE-7200',
+    concentrationPct: 100.0,
+  };
+  // The meter currently reports register 30006 in Fahrenheit; the UI renders it in Celsius.
+  const FLOW_TEMPERATURE_SOURCE_UNIT = 'fahrenheit';
   const PUMP_LOG_FIELDS = [
     { column: 'pump_cmd_pct', key: 'cmd_pct', digits: 3 },
     { column: 'pump_cmd_hz', key: 'cmd_hz', digits: 3 },
@@ -29,14 +35,28 @@
     { column: 'pump_pressure_error_bar', key: 'pressure_error_bar', digits: 3 },
     { column: 'pump_max_freq_hz', key: 'max_freq_hz', digits: 3 },
   ];
+  const FLUID_LOG_FIELDS = [
+    { column: 'fluid_meter_valid', key: 'meter_valid', digits: 0 },
+    { column: 'fluid_concentration_pct', key: 'concentration_pct', digits: 1 },
+    { column: 'fluid_flow_velocity_mps', key: 'flow_velocity_mps', digits: 6 },
+    { column: 'fluid_volume_flow_m3s', key: 'volume_flow_m3s', digits: 9 },
+    { column: 'fluid_mass_flow_kgs', key: 'mass_flow_kgs', digits: 9 },
+    { column: 'fluid_temperature_raw', key: 'temperature_raw', digits: 6 },
+    { column: 'fluid_temperature_c', key: 'temperature_c', digits: 3 },
+    { column: 'fluid_density_kg_m3', key: 'density_kg_m3', digits: 6 },
+    { column: 'fluid_delta_p_bar', key: 'delta_p_bar', digits: 3 },
+  ];
   const LOG_HEADER = [
     'time_s',
     ...Array.from({ length: MAX_SENSORS }, (_, idx) => `temp${idx}_C`),
     'valve',
     'mode',
     ...PUMP_LOG_FIELDS.map((field) => field.column),
+    ...FLUID_LOG_FIELDS.map((field) => field.column),
   ];
-  const PUMP_FIELD_DIGITS = new Map(PUMP_LOG_FIELDS.map((field) => [field.column, field.digits || 3]));
+  const LOG_FIELD_DIGITS = new Map(
+    [...PUMP_LOG_FIELDS, ...FLUID_LOG_FIELDS].map((field) => [field.column, field.digits || 3]),
+  );
 
   const params = new URLSearchParams(window.location.search);
   const tokenParam = params.get('token') || '';
@@ -89,6 +109,18 @@
   const overviewTankPressureSubEl = document.getElementById('overview-tank-pressure-sub');
   const sensorValuesEl = document.getElementById('sensor-values');
   const loggingToggleBtn = document.getElementById('logging-toggle');
+  const fluidNameEl = document.getElementById('fluid-name');
+  const fluidConcentrationEl = document.getElementById('fluid-concentration');
+  const fluidPressureDropEl = document.getElementById('fluid-pressure-drop');
+  const fluidPressureDropSubEl = document.getElementById('fluid-pressure-drop-sub');
+  const fluidFlowVelocityEl = document.getElementById('fluid-flow-velocity');
+  const fluidVolumeFlowEl = document.getElementById('fluid-volume-flow');
+  const fluidMassFlowEl = document.getElementById('fluid-mass-flow');
+  const fluidTemperatureEl = document.getElementById('fluid-temperature');
+  const fluidDensityEl = document.getElementById('fluid-density');
+  const fluidTempRiseEl = document.getElementById('fluid-temp-rise');
+  const fluidViscosityEl = document.getElementById('fluid-viscosity');
+  const fluidMixingEfficiencyEl = document.getElementById('fluid-mixing-efficiency');
   const setpointForm = document.getElementById('setpoint-form');
   const setpointInput = document.getElementById('setpoint-input');
   const hysteresisInput = document.getElementById('hysteresis-input');
@@ -405,9 +437,9 @@
     scheduleChartHeightUpdate();
   }
 
-  function extractPumpLogValues(pump) {
-    const src = pump && typeof pump === 'object' ? pump : null;
-    return PUMP_LOG_FIELDS.map((field) => {
+  function extractLogValues(source, fields) {
+    const src = source && typeof source === 'object' ? source : null;
+    return fields.map((field) => {
       const raw = src ? src[field.key] : null;
       if (raw === null || raw === undefined) {
         return NaN;
@@ -434,8 +466,8 @@
       const text = typeof value === 'string' ? value : String(value || '');
       return text.slice(0, 1);
     }
-    if (column.startsWith('pump_')) {
-      const digits = PUMP_FIELD_DIGITS.get(column) || 3;
+    if (column.startsWith('pump_') || column.startsWith('fluid_')) {
+      const digits = LOG_FIELD_DIGITS.get(column) || 3;
       const num = typeof value === 'number' ? value : Number(value);
       return Number.isFinite(num) ? num.toFixed(digits) : 'nan';
     }
@@ -554,6 +586,7 @@
     if (latestSnapshot) {
       latestSnapshot.avgSelected = Number.isFinite(avgValue) ? avgValue : null;
       latestSnapshot.selectedValid = selectedValid;
+      updateFluidTelemetry(latestSnapshot.fluid, latestSnapshot.pump);
     }
     scheduleChartHeightUpdate();
   }
@@ -614,6 +647,75 @@
       }
     }
     return null;
+  }
+
+  function finiteNumber(value) {
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? value : NaN;
+    }
+    const num = Number(value);
+    return Number.isFinite(num) ? num : NaN;
+  }
+
+  function formatNumber(value, digits = 2, suffix = '') {
+    return Number.isFinite(value) ? `${value.toFixed(digits)}${suffix}` : '—';
+  }
+
+  function convertFlowTemperature(rawValue) {
+    const raw = finiteNumber(rawValue);
+    if (!Number.isFinite(raw)) {
+      return { celsius: NaN, main: '—' };
+    }
+
+    if (FLOW_TEMPERATURE_SOURCE_UNIT === 'fahrenheit') {
+      const celsius = ((raw - 32) * 5) / 9;
+      return {
+        celsius,
+        main: `${celsius.toFixed(2)} °C`,
+      };
+    }
+    if (FLOW_TEMPERATURE_SOURCE_UNIT === 'kelvin') {
+      const celsius = raw - 273.15;
+      return {
+        celsius,
+        main: `${celsius.toFixed(2)} °C`,
+      };
+    }
+    return {
+      celsius: raw,
+      main: `${raw.toFixed(2)} °C`,
+    };
+  }
+
+  function buildFluidTelemetryModel(fluidData, pumpData) {
+    const fluid = fluidData && typeof fluidData === 'object' ? fluidData : null;
+    const pump = pumpData && typeof pumpData === 'object' ? pumpData : null;
+    const concentrationPct =
+      fluid && Number.isFinite(fluid.concentration_pct)
+        ? fluid.concentration_pct
+        : FLUID_REFERENCE.concentrationPct;
+    const temperatureRaw = fluid ? finiteNumber(fluid.temperature_raw) : NaN;
+    const temperature = convertFlowTemperature(temperatureRaw);
+    const beforeBar = pump ? finiteNumber(pump.pressure_before_bar_abs) : NaN;
+    const afterBar = pump ? finiteNumber(pump.pressure_after_bar_abs) : NaN;
+    const deltaPBar =
+      Number.isFinite(beforeBar) && Number.isFinite(afterBar) ? afterBar - beforeBar : NaN;
+
+    return {
+      name:
+        fluid && typeof fluid.name === 'string' && fluid.name.trim()
+          ? fluid.name.trim()
+          : FLUID_REFERENCE.name,
+      concentration_pct: concentrationPct,
+      meter_valid: fluid && coerceOnOff(fluid.meter_valid) === true ? 1 : 0,
+      flow_velocity_mps: fluid ? finiteNumber(fluid.flow_velocity_mps) : NaN,
+      volume_flow_m3s: fluid ? finiteNumber(fluid.volume_flow_m3s) : NaN,
+      mass_flow_kgs: fluid ? finiteNumber(fluid.mass_flow_kgs) : NaN,
+      temperature_raw: temperatureRaw,
+      temperature_c: temperature.celsius,
+      density_kg_m3: fluid ? finiteNumber(fluid.density_kg_m3) : NaN,
+      delta_p_bar: deltaPBar,
+    };
   }
 
   function currentMaxPumpPct() {
@@ -911,6 +1013,72 @@
     }
   }
 
+  function updateFluidTelemetry(fluidData, pumpData) {
+    const fluidModel = buildFluidTelemetryModel(fluidData, pumpData);
+    const temperature = convertFlowTemperature(fluidModel.temperature_raw);
+    const volumeFlowLMin = Number.isFinite(fluidModel.volume_flow_m3s)
+      ? fluidModel.volume_flow_m3s * 60000
+      : NaN;
+    const massFlowKgMin = Number.isFinite(fluidModel.mass_flow_kgs)
+      ? fluidModel.mass_flow_kgs * 60
+      : NaN;
+
+    if (fluidNameEl) {
+      fluidNameEl.textContent = fluidModel.name;
+    }
+    if (fluidConcentrationEl) {
+      const digits = Number.isInteger(fluidModel.concentration_pct) ? 0 : 1;
+      fluidConcentrationEl.textContent = `${fluidModel.concentration_pct.toFixed(digits)}% composition`;
+    }
+    if (fluidPressureDropEl) {
+      fluidPressureDropEl.textContent = formatNumber(fluidModel.delta_p_bar, 3, ' bar');
+    }
+    if (fluidPressureDropSubEl) {
+      fluidPressureDropSubEl.textContent = 'After pump - before pump';
+    }
+
+    if (fluidFlowVelocityEl) {
+      fluidFlowVelocityEl.textContent = formatNumber(fluidModel.flow_velocity_mps, 3, ' m/s');
+    }
+
+    if (fluidVolumeFlowEl) {
+      fluidVolumeFlowEl.textContent = formatNumber(volumeFlowLMin, 3, ' L/min');
+    }
+
+    if (fluidMassFlowEl) {
+      fluidMassFlowEl.textContent = formatNumber(massFlowKgMin, 3, ' kg/min');
+    }
+
+    if (fluidTemperatureEl) {
+      fluidTemperatureEl.textContent = temperature.main;
+    }
+
+    if (fluidDensityEl) {
+      fluidDensityEl.textContent = formatNumber(fluidModel.density_kg_m3, 4, ' kg/m³');
+    }
+
+    if (fluidTempRiseEl) {
+      const avgSelected =
+        latestSnapshot && Number.isFinite(latestSnapshot.avgSelected)
+          ? latestSnapshot.avgSelected
+          : NaN;
+      if (Number.isFinite(avgSelected) && Number.isFinite(temperature.celsius)) {
+        const proxyDelta = avgSelected - temperature.celsius;
+        fluidTempRiseEl.textContent = `${proxyDelta.toFixed(2)} °C`;
+      } else {
+        fluidTempRiseEl.textContent = 'Awaiting inlet/outlet mapping';
+      }
+    }
+
+    if (fluidViscosityEl) {
+      fluidViscosityEl.textContent = 'Awaiting calibrated hydraulic model';
+    }
+
+    if (fluidMixingEfficiencyEl) {
+      fluidMixingEfficiencyEl.textContent = 'Reserved';
+    }
+  }
+
   function handleTelemetry(data) {
     const tempsRaw = Array.isArray(data.temps)
       ? data.temps
@@ -950,6 +1118,7 @@
     }
 
     const pump = data && typeof data.pump === 'object' ? data.pump : null;
+    const fluid = data && typeof data.fluid === 'object' ? data.fluid : null;
 
     const valve = Number.isFinite(data.valve) ? Number(data.valve) : 0;
 
@@ -988,14 +1157,19 @@
     renderHeaterState(heaterBottomStateEl, bottomOn);
     renderHeaterState(heaterExhaustStateEl, exhaustOn);
 
+    const fluidLog = buildFluidTelemetryModel(fluid, pump);
+
     latestSnapshot = {
       temps: temps.slice(0, MAX_SENSORS),
       sensorCount,
       valve,
       modeChar,
+      pump,
+      fluid,
     };
     updatePumpTelemetry(pump);
     updateSensorStats();
+    updateFluidTelemetry(fluid, pump);
     maybeRunAutoValve(valveOpen);
 
     if (serverLogInfo.active) {
@@ -1011,7 +1185,8 @@
       }
       row.push(valve);
       row.push(modeChar);
-      row.push(...extractPumpLogValues(pump));
+      row.push(...extractLogValues(pump, PUMP_LOG_FIELDS));
+      row.push(...extractLogValues(fluidLog, FLUID_LOG_FIELDS));
       loggingRows.push(row);
     }
 

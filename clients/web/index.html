@@ -273,25 +273,55 @@
         <section class="hero-card">
           <h2>Fluid Properties</h2>
           <p>
-            Track cryogenic fluid behavior here. Once telemetry is available, these metrics will populate automatically.
+            Live fluid telemetry and derived properties for the current test fluid.
           </p>
         </section>
 
-        <section class="stats-section">
+        <section class="overview-grid fluid-overview-grid">
+          <article class="overview-card">
+            <h3>Working Fluid</h3>
+            <p id="fluid-name" class="overview-value">HFE-7200</p>
+            <p id="fluid-concentration" class="overview-subvalue muted">100% composition</p>
+            <p class="overview-hint">Baseline fluid for the first commissioning runs.</p>
+          </article>
+          <article class="overview-card">
+            <h3>ΔP</h3>
+            <p id="fluid-pressure-drop" class="overview-value">—</p>
+            <p id="fluid-pressure-drop-sub" class="overview-subvalue muted">After pump - before pump</p>
+            <p class="overview-hint">Current differential between the existing before-pump and after-pump sensors.</p>
+          </article>
+        </section>
+
+        <section class="stats-section fluid-reading-grid">
+          <div class="stat-card">
+            <h2>Flow Velocity</h2>
+            <p id="fluid-flow-velocity">—</p>
+          </div>
+          <div class="stat-card">
+            <h2>Volume Flow Rate</h2>
+            <p id="fluid-volume-flow">—</p>
+          </div>
+          <div class="stat-card">
+            <h2>Mass Flow Rate</h2>
+            <p id="fluid-mass-flow">—</p>
+          </div>
+          <div class="stat-card">
+            <h2>Fluid Temperature</h2>
+            <p id="fluid-temperature">—</p>
+          </div>
+          <div class="stat-card">
+            <h2>Density</h2>
+            <p id="fluid-density">—</p>
+          </div>
+        </section>
+
+        <section class="stats-section fluid-analysis-grid">
           <div class="stat-card">
             <h2>Temperature Increase</h2>
             <p id="fluid-temp-rise" class="muted">Awaiting telemetry…</p>
           </div>
           <div class="stat-card">
-            <h2>Mass Flow Rate</h2>
-            <p id="fluid-mass-flow" class="muted">Awaiting telemetry…</p>
-          </div>
-          <div class="stat-card">
-            <h2>Density</h2>
-            <p id="fluid-density" class="muted">Awaiting telemetry…</p>
-          </div>
-          <div class="stat-card">
-            <h2>Viscosity</h2>
+            <h2>Viscosity Estimate</h2>
             <p id="fluid-viscosity" class="muted">Awaiting telemetry…</p>
           </div>
           <div class="stat-card">

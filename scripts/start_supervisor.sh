@@ -114,12 +114,31 @@ mkdir -p "${LOG_DIR}"
 
 echo "Starting supervisor on ${HOST}:${PORT} (logs: ${LOG_FILE})"
 
-nohup uvicorn supervisor.app:app --host "${HOST}" --port "${PORT}" \
-  >"${LOG_FILE}" 2>&1 &
+declare -a uvicorn_cmd=(
+  uvicorn
+  supervisor.app:app
+  --host "${HOST}"
+  --port "${PORT}"
+)
+
+if command -v setsid >/dev/null 2>&1; then
+  nohup setsid "${uvicorn_cmd[@]}" \
+    < /dev/null >"${LOG_FILE}" 2>&1 &
+else
+  nohup "${uvicorn_cmd[@]}" \
+    < /dev/null >"${LOG_FILE}" 2>&1 &
+fi
 SUP_PID=$!
 
 if command -v disown >/dev/null 2>&1; then
   disown "${SUP_PID}" >/dev/null 2>&1 || true
+fi
+
+sleep 1
+if ! kill -0 "${SUP_PID}" 2>/dev/null; then
+  echo "Supervisor did not remain running; recent log output:" >&2
+  tail -n 40 "${LOG_FILE}" >&2 || true
+  exit 1
 fi
 
 echo "Supervisor started in background with PID ${SUP_PID}."

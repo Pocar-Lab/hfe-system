@@ -44,6 +44,9 @@ with CFG_PATH.open("r") as f:
 ENV_TOKEN = (os.getenv("SUPERVISOR_TOKEN") or "").strip()
 CFG_TOKEN = (CFG.get("server", {}).get("auth_token") or "").strip()
 AUTH_TOKEN = ENV_TOKEN or CFG_TOKEN
+FLOW_TEMPERATURE_SOURCE_UNIT = str(
+    (CFG.get("flow_meter", {}) or {}).get("temperature_source_unit") or "fahrenheit"
+).strip().lower()
 
 log.info(
     "Auth required: %s; token prefix: %s",
@@ -173,6 +176,55 @@ PUMP_LOG_FIELDS: list[tuple[str, str, str]] = [
     ("pump_pressure_error_bar", "pressure_error_bar", "{:.3f}"),
     ("pump_max_freq_hz", "max_freq_hz", "{:.3f}"),
 ]
+FLUID_LOG_FIELDS: list[tuple[str, str, str]] = [
+    ("fluid_meter_valid", "meter_valid", "{:.0f}"),
+    ("fluid_concentration_pct", "concentration_pct", "{:.1f}"),
+    ("fluid_flow_velocity_mps", "flow_velocity_mps", "{:.6f}"),
+    ("fluid_volume_flow_m3s", "volume_flow_m3s", "{:.9f}"),
+    ("fluid_mass_flow_kgs", "mass_flow_kgs", "{:.9f}"),
+    ("fluid_temperature_raw", "temperature_raw", "{:.6f}"),
+    ("fluid_temperature_c", "temperature_c", "{:.3f}"),
+    ("fluid_density_kg_m3", "density_kg_m3", "{:.6f}"),
+    ("fluid_delta_p_bar", "delta_p_bar", "{:.3f}"),
+]
+
+
+def _finite_float(value: object) -> float | None:
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if math.isfinite(numeric):
+            return numeric
+    return None
+
+
+def _flow_temperature_to_c(raw_value: object) -> float | None:
+    raw = _finite_float(raw_value)
+    if raw is None:
+        return None
+    if FLOW_TEMPERATURE_SOURCE_UNIT == "fahrenheit":
+        return (raw - 32.0) * 5.0 / 9.0
+    if FLOW_TEMPERATURE_SOURCE_UNIT == "kelvin":
+        return raw - 273.15
+    return raw
+
+
+def _fluid_delta_p_bar(pump: dict) -> float | None:
+    before = _finite_float(pump.get("pressure_before_bar_abs"))
+    after = _finite_float(pump.get("pressure_after_bar_abs"))
+    if before is None or after is None:
+        return None
+    return after - before
+
+
+def _build_fluid_log_values(payload: dict) -> dict:
+    fluid_raw = payload.get("fluid")
+    fluid = fluid_raw if isinstance(fluid_raw, dict) else {}
+    pump_raw = payload.get("pump")
+    pump = pump_raw if isinstance(pump_raw, dict) else {}
+    values = dict(fluid)
+    values["temperature_c"] = _flow_temperature_to_c(fluid.get("temperature_raw"))
+    values["delta_p_bar"] = _fluid_delta_p_bar(pump)
+    return values
 
 def candidate_serial_ports() -> list[str]:
     ports: list[str] = []
@@ -240,6 +292,7 @@ def _start_logging(state, filename: Optional[str] = None) -> dict:
         + [f"temp{i}_C" for i in range(MAX_LOG_SENSORS)]
         + ["valve", "mode"]
         + [col for col, _, _ in PUMP_LOG_FIELDS]
+        + [col for col, _, _ in FLUID_LOG_FIELDS]
     )
     writer.writerow(header)
     fh.flush()
@@ -315,6 +368,14 @@ def _maybe_log_telemetry(state, payload: dict) -> None:
     pump = pump_raw if isinstance(pump_raw, dict) else {}
     for _, key, fmt in PUMP_LOG_FIELDS:
         value = pump.get(key)
+        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+            row.append(fmt.format(float(value)))
+        else:
+            row.append("nan")
+
+    fluid = _build_fluid_log_values(payload)
+    for _, key, fmt in FLUID_LOG_FIELDS:
+        value = fluid.get(key)
         if isinstance(value, (int, float)) and math.isfinite(float(value)):
             row.append(fmt.format(float(value)))
         else:

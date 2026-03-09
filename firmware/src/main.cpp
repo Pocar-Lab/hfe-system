@@ -34,6 +34,15 @@ constexpr uint8_t  VFD_SLAVE_ADDR    = 1;       // y01
 constexpr uint32_t VFD_BAUD          = 9600;    // y04
 constexpr unsigned long VFD_POLL_MS  = 1000UL;  // poll M09–M12 once per second
 
+// ── Flow meter (KROHNE MFC400 via DFR0845 on Serial2) ───────────────────
+constexpr uint8_t  FLOW_SLAVE_ADDR   = 1;
+constexpr uint32_t FLOW_BAUD         = 19200;
+constexpr unsigned long FLOW_POLL_MS = 1000UL;
+constexpr uint16_t FLOW_REG_START    = 30000;   // 30000..30008, five floats
+constexpr uint8_t  FLOW_REG_COUNT    = 10;      // 10 x 16-bit regs = 5 x float32
+constexpr float    FLUID_CONC_PCT    = 100.0f;
+constexpr char     FLUID_NAME[]      = "HFE-7200";
+
 // ── Pressure sensors (0–5.013 V = 10 bar gauge) ─────────────────────────
 // IMPORTANT: these must be analog-capable pins (A0–A15 on the Mega). If you move the wiring,
 // update these constants to the matching Ax (or 54..69) numbers.
@@ -71,10 +80,12 @@ static Adafruit_MAX31856* tc[NUM_TCS] = { nullptr };
 // ── Timing ───────────────────────────────────────────────────────────────
 static unsigned long lastSample = 0;
 static unsigned long lastVfdPoll = 0;
+static unsigned long lastFlowPoll = 0;
 constexpr unsigned long SAMPLE_INTERVAL_MS = 1000UL;
 
 // ── Pump / VFD state ─────────────────────────────────────────────────────
 HardwareSerial &VFD = Serial3;
+HardwareSerial &FLOW = Serial2;
 
 struct VfdSnapshot {
   bool   valid;
@@ -87,6 +98,18 @@ struct VfdSnapshot {
 
 static VfdSnapshot g_vfd = { false, NAN, NAN, NAN, NAN, 0 };
 static float       g_pump_cmd_pct = 0.0f;
+
+struct FlowSnapshot {
+  bool   valid;
+  float  flowVelocityMps;
+  float  volumeFlowM3s;
+  float  massFlowKgS;
+  float  temperatureRaw;
+  float  densityKgM3;
+  unsigned long lastPollMs;
+};
+
+static FlowSnapshot g_flow = { false, NAN, NAN, NAN, NAN, NAN, 0 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 static float readPressureVolts(uint8_t pin) {
@@ -171,6 +194,15 @@ static uint16_t modbusCRC(const uint8_t *data, size_t len) {
   return crc;
 }
 
+static float regsToFloatBE(const uint16_t *regs) {
+  union {
+    uint32_t u32;
+    float f32;
+  } value;
+  value.u32 = (static_cast<uint32_t>(regs[0]) << 16) | regs[1];
+  return value.f32;
+}
+
 // Read N_M_REG contiguous registers starting at M09 (FC=0x03)
 static bool vfdReadM09toM12(uint16_t *vals) {
   uint8_t frame[8];
@@ -249,6 +281,84 @@ static bool pollVfd() {
   g_vfd.inputPowerPct   = vals[1] / 100.0f;  // 0.01 %
   g_vfd.outputCurrentPct= vals[2] / 100.0f;  // 0.01 % of inverter rated current
   g_vfd.outputVoltageV  = vals[3] * 0.1f;    // 0.1 V units
+  return true;
+}
+
+static bool flowReadMeasurements(uint16_t *vals) {
+  uint8_t frame[8];
+
+  frame[0] = FLOW_SLAVE_ADDR;
+  frame[1] = 0x04;                  // Read Input Registers
+  frame[2] = FLOW_REG_START >> 8;
+  frame[3] = FLOW_REG_START & 0xFF;
+  frame[4] = 0x00;
+  frame[5] = FLOW_REG_COUNT;
+
+  uint16_t crc = modbusCRC(frame, 6);
+  frame[6] = crc & 0xFF;
+  frame[7] = crc >> 8;
+
+  while (FLOW.available()) FLOW.read();
+
+  FLOW.write(frame, 8);
+  FLOW.flush();
+
+  const uint8_t expectedLen = 3 + 2 * FLOW_REG_COUNT + 2;
+  uint8_t buf[32];
+  uint8_t len = 0;
+  unsigned long start = millis();
+
+  while ((millis() - start) < 250 && len < expectedLen) {
+    if (FLOW.available()) {
+      buf[len++] = static_cast<uint8_t>(FLOW.read());
+    }
+  }
+
+  if (len != expectedLen) {
+    return false;
+  }
+
+  uint16_t crcResp = (uint16_t)buf[len - 1] << 8 | buf[len - 2];
+  uint16_t crcCalc = modbusCRC(buf, len - 2);
+  if (crcResp != crcCalc) {
+    return false;
+  }
+
+  if (buf[0] != FLOW_SLAVE_ADDR || buf[1] != 0x04) {
+    return false;
+  }
+
+  if (buf[2] != 2 * FLOW_REG_COUNT) {
+    return false;
+  }
+
+  for (uint8_t i = 0; i < FLOW_REG_COUNT; ++i) {
+    vals[i] = ((uint16_t)buf[3 + 2 * i] << 8) | buf[4 + 2 * i];
+  }
+
+  return true;
+}
+
+static bool pollFlowMeter() {
+  uint16_t regs[FLOW_REG_COUNT];
+  const bool ok = flowReadMeasurements(regs);
+  g_flow.lastPollMs = millis();
+  if (!ok) {
+    g_flow.valid = false;
+    g_flow.flowVelocityMps = NAN;
+    g_flow.volumeFlowM3s = NAN;
+    g_flow.massFlowKgS = NAN;
+    g_flow.temperatureRaw = NAN;
+    g_flow.densityKgM3 = NAN;
+    return false;
+  }
+
+  g_flow.valid = true;
+  g_flow.flowVelocityMps = regsToFloatBE(&regs[0]);
+  g_flow.volumeFlowM3s   = regsToFloatBE(&regs[2]);
+  g_flow.massFlowKgS     = regsToFloatBE(&regs[4]);
+  g_flow.temperatureRaw  = regsToFloatBE(&regs[6]);
+  g_flow.densityKgM3     = regsToFloatBE(&regs[8]);
   return true;
 }
 
@@ -399,6 +509,29 @@ static void emitTelemetry(const float temps[], size_t count, unsigned long nowMs
   Serial.print(F(",\"pressure_error_bar\":"));
   Serial.print(PRESSURE_ERR_BAR, 3);
   Serial.print('}');
+  Serial.print(F(",\"fluid\":{"));
+  Serial.print(F("\"name\":\""));
+  Serial.print(FLUID_NAME);
+  Serial.print(F("\",\"concentration_pct\":"));
+  Serial.print(FLUID_CONC_PCT, 1);
+  Serial.print(F(",\"meter_valid\":"));
+  Serial.print(g_flow.valid ? 1 : 0);
+  Serial.print(F(",\"meter_poll_ms\":"));
+  Serial.print(g_flow.lastPollMs);
+
+  if (g_flow.valid) {
+    Serial.print(F(",\"flow_velocity_mps\":"));
+    Serial.print(g_flow.flowVelocityMps, 6);
+    Serial.print(F(",\"volume_flow_m3s\":"));
+    Serial.print(g_flow.volumeFlowM3s, 9);
+    Serial.print(F(",\"mass_flow_kgs\":"));
+    Serial.print(g_flow.massFlowKgS, 9);
+    Serial.print(F(",\"temperature_raw\":"));
+    Serial.print(g_flow.temperatureRaw, 6);
+    Serial.print(F(",\"density_kg_m3\":"));
+    Serial.print(g_flow.densityKgM3, 6);
+  }
+  Serial.print('}');
   Serial.print(F(",\"heaters\":{"));
   Serial.print(F("\"bottom\":"));
   Serial.print(g_heater_bottom_on ? 1 : 0);
@@ -411,6 +544,7 @@ static void emitTelemetry(const float temps[], size_t count, unsigned long nowMs
 void setup() {
   Serial.begin(115200);
   VFD.begin(VFD_BAUD, SERIAL_8E1);
+  FLOW.begin(FLOW_BAUD, SERIAL_8E1);
   analogReference(DEFAULT);
 
   setupPwm2kHz();
@@ -440,8 +574,8 @@ void setup() {
     tc[i]->setNoiseFilter(MAX31856_NOISE_FILTER_60HZ); // correct enum
   }
 
-  // JSON line telemetry: temps[0..9] (°C), valve (0/1), mode (A/O/C), pump{} (VFD + pressures), heaters{}
-  Serial.println(F("# Telemetry keys: temps[0..9] (°C), valve (0/1), mode (A/O/C), pump{} (VFD + pressures), heaters{bottom,exhaust}"));
+  // JSON line telemetry: temps[0..9] (°C), valve (0/1), mode (A/O/C), pump{}, fluid{}, heaters{}
+  Serial.println(F("# Telemetry keys: temps[0..9] (°C), valve (0/1), mode (A/O/C), pump{} (VFD + pressures), fluid{} (MFC400), heaters{bottom,exhaust}"));
 }
 
 void loop() {
@@ -459,6 +593,11 @@ void loop() {
   if (now - lastVfdPoll >= VFD_POLL_MS) {
     lastVfdPoll = now;
     pollVfd();
+  }
+
+  if (now - lastFlowPoll >= FLOW_POLL_MS) {
+    lastFlowPoll = now;
+    pollFlowMeter();
   }
 
   // ── 1 Hz sampling ──────────────────────────────────────────────────────
