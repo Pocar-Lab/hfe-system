@@ -5,6 +5,7 @@
   const MAX_POINTS = 900;
   const WINDOW_MINUTES = 15;
   const SETPOINT = 25.0;
+  const THERMOCOUPLE_DISPLAY_DIGITS = 0;
   const PUMP_MAX_CMD_PCT = 100.0;
   const PUMP_MAX_FREQ_HZ = 71.7;
   const PUMP_SAFE_MAX_HZ = 60.0;
@@ -222,6 +223,16 @@
     return `Set-point (${currentSetpoint.toFixed(1)} °C)`;
   }
 
+  function formatThermocoupleValue(value) {
+    const num = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(num) ? num.toFixed(THERMOCOUPLE_DISPLAY_DIGITS) : '—';
+  }
+
+  function formatThermocoupleTemperature(value) {
+    const formatted = formatThermocoupleValue(value);
+    return formatted === '—' ? formatted : `${formatted} °C`;
+  }
+
   const setpointDataset = {
     label: setpointLabel(),
     borderColor: '#adb5bd',
@@ -260,7 +271,12 @@
           title: { display: true, text: 'Temperature (°C)' },
           suggestedMin: -170,
           suggestedMax: 25,
-          ticks: { color: tickColor },
+          ticks: {
+            color: tickColor,
+            callback(value) {
+              return formatThermocoupleValue(value);
+            },
+          },
           grid: { color: gridColor },
         },
       },
@@ -268,6 +284,20 @@
         legend: {
           labels: {
             color: legendLabelColor,
+          },
+        },
+        tooltip: {
+          callbacks: {
+            label(context) {
+              const datasetLabel = context.dataset && context.dataset.label ? `${context.dataset.label}: ` : '';
+              const yValue = context.parsed && typeof context.parsed.y === 'number'
+                ? context.parsed.y
+                : Number.NaN;
+              if (context.dataset === setpointDataset) {
+                return Number.isFinite(yValue) ? `${datasetLabel}${yValue.toFixed(1)} °C` : `${datasetLabel}—`;
+              }
+              return `${datasetLabel}${formatThermocoupleTemperature(yValue)}`;
+            },
           },
         },
       },
@@ -560,7 +590,7 @@
       if (!finite) {
         classes.push('inactive');
       }
-      const displayValue = finite ? `${value.toFixed(2)} °C` : '—';
+      const displayValue = finite ? formatThermocoupleTemperature(value) : '—';
       chips.push(`<div class="${classes.join(' ')}">U${i}: ${displayValue}</div>`);
       if (finite) {
         validNow += 1;
@@ -577,10 +607,10 @@
     validCountEl.textContent = `Valid now: ${validNow} • Selected: ${selectedValid}`;
     validListEl.textContent = selectedLabels.length ? `Included sensors: ${selectedLabels.join(', ')}` : 'Included sensors: —';
     const avgValue = selectedValid ? selectedSum / selectedValid : NaN;
-    avgTempEl.textContent = Number.isFinite(avgValue) ? `${avgValue.toFixed(2)} °C` : '—';
+    avgTempEl.textContent = Number.isFinite(avgValue) ? formatThermocoupleTemperature(avgValue) : '—';
     if (overviewAvgTempEl) {
       overviewAvgTempEl.textContent = Number.isFinite(avgValue)
-        ? `${avgValue.toFixed(2)} °C`
+        ? formatThermocoupleTemperature(avgValue)
         : '—';
     }
     if (latestSnapshot) {
@@ -1355,7 +1385,7 @@
 
     const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const filename = `tc_log_${stamp}.csv`;
+    const filename = `log_${stamp}.csv`;
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;

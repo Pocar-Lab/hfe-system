@@ -136,7 +136,7 @@ class TCMonitorApp:
 
     # ── Logging helpers ────────────────────────────────────────────────────
     def start_logging(self) -> None:
-        default_name = f"tc_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        default_name = f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         path_str = filedialog.asksaveasfilename(
             title="Save CSV log",
             initialfile=default_name,

@@ -283,7 +283,7 @@ def _start_logging(state, filename: Optional[str] = None) -> dict:
     if filename:
         safe_name = _sanitize_filename(filename)
     else:
-        safe_name = f"tc_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        safe_name = f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     path = RAW_LOG_DIR / safe_name
     fh = path.open("w", newline="", encoding="utf-8")
     writer = csv.writer(fh)
