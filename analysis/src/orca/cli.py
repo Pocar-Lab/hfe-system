@@ -1,4 +1,4 @@
-"""Command line interface for heat-exchanger analysis."""
+"""ORCA command line entry points."""
 
 from __future__ import annotations
 
@@ -7,18 +7,20 @@ from pathlib import Path
 
 import pandas as pd
 
-from hfe_ana.io import load_tc_csv
-from hfe_ana.filters import rolling_slope
-from hfe_ana.hx import (
+from .core import (
     apply_corrections,
     apparent_power,
     bath_capacity_j_per_k,
     fit_heat_leak_and_UA,
     integrate_energy,
+    load_tc_csv,
+    rolling_slope,
 )
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI parser for the HX analysis command."""
+
     parser = argparse.ArgumentParser(
         description="Compute corrected heat-exchanger power from a temperature log."
     )
@@ -40,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs=2,
         default=(1.0, 12.0),
         metavar=("DT_MIN", "DT_MAX"),
-        help="Delta-T range [°C] to use for the early UA regression.",
+        help="Delta-T range [degC] to use for the early UA regression.",
     )
     parser.add_argument("--window-s", type=float, default=45.0, help="Rolling window for dT/dt [s].")
     parser.add_argument(
@@ -57,27 +59,27 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    """Run the ORCA heat-exchanger CLI workflow."""
 
-    df = load_tc_csv(Path(args.input))
-    cp = bath_capacity_j_per_k(args.volume_L, args.rho, args.cp_kJkgK)
-    df = apparent_power(df, cp, args.window_s, slope_func=rolling_slope)
+    args = build_parser().parse_args(argv)
+
+    data = load_tc_csv(Path(args.input))
+    bath_capacity = bath_capacity_j_per_k(args.volume_L, args.rho, args.cp_kJkgK)
+    data = apparent_power(data, bath_capacity, args.window_s, slope_func=rolling_slope)
 
     result = fit_heat_leak_and_UA(
-        df,
+        data,
         tmin_window=tuple(args.tmin_window),
         deltaT_range=tuple(args.deltaT_range),
     )
-    dfc = apply_corrections(df, result.heat_leak_W)
+    corrected = apply_corrections(data, result.heat_leak_W)
 
-    sel = (dfc["t_min"] >= 2) & (dfc["t_min"] <= 14) & (~dfc["P_HX_W"].isna())
-    energy_J = integrate_energy(dfc.loc[sel, "time_s"], dfc.loc[sel, "P_HX_W"])
+    selection = (corrected["t_min"] >= 2) & (corrected["t_min"] <= 14) & (~corrected["P_HX_W"].isna())
+    energy_j = integrate_energy(corrected.loc[selection, "time_s"], corrected.loc[selection, "P_HX_W"])
 
-    # Save outputs
-    ts_path = Path(args.out_ts)
-    ts_path.parent.mkdir(parents=True, exist_ok=True)
-    dfc.to_csv(ts_path, index=False)
+    timeseries_path = Path(args.out_ts)
+    timeseries_path.parent.mkdir(parents=True, exist_ok=True)
+    corrected.to_csv(timeseries_path, index=False)
 
     summary = pd.DataFrame(
         [
@@ -86,7 +88,7 @@ def main(argv: list[str] | None = None) -> None:
                 "H_W": result.heat_leak_W,
                 "R2": result.r_squared,
                 "N_regression": result.n_points,
-                "E_2_14_kJ": energy_J / 1000.0,
+                "E_2_14_kJ": energy_j / 1000.0,
             }
         ]
     )
@@ -99,9 +101,5 @@ def main(argv: list[str] | None = None) -> None:
         f"H={result.heat_leak_W:.0f} W, "
         f"R2={result.r_squared:.3f}, "
         f"N={result.n_points}, "
-        f"E_2_14={energy_J/1000.0:.0f} kJ"
+        f"E_2_14={energy_j / 1000.0:.0f} kJ"
     )
-
-
-if __name__ == "__main__":
-    main()

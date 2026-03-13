@@ -1,4 +1,4 @@
-"""Shared helper utilities for heat-exchanger analysis notebooks."""
+"""Shared ORCA helper utilities for heat-exchanger analysis notebooks."""
 
 from __future__ import annotations
 
@@ -6,11 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from .hx import apparent_power, integrate_energy
-from .io import load_tc_csv
+from .core import apparent_power, integrate_energy, load_tc_csv
 
 
 def prepare_dataset(
@@ -482,8 +482,6 @@ def plot_temperature_window_fit(
     """
     Plot the windowed bulk-temperature samples with the corresponding best-fit line.
     """
-    import matplotlib.pyplot as plt
-
     if figsize is None:
         figsize = (7.0, 4.2)
     fig, ax = plt.subplots(figsize=figsize)
@@ -528,3 +526,242 @@ def plot_temperature_window_fit(
         )
     fig.tight_layout()
     return fig
+
+
+def _ensure_means(df: pd.DataFrame) -> pd.DataFrame:
+    """Add bulk/coil mean columns if they are not already present."""
+
+    data = df.copy()
+    if "T_bulk_mean_C" not in data.columns and {"U1_bottom_C", "U3_top_C"}.issubset(data.columns):
+        data["T_bulk_mean_C"] = data[["U1_bottom_C", "U3_top_C"]].mean(axis=1)
+    if "T_coil_mean_C" not in data.columns and {"U2_coilTop_C", "U4_coilMid_C"}.issubset(data.columns):
+        data["T_coil_mean_C"] = data[["U2_coilTop_C", "U4_coilMid_C"]].mean(axis=1)
+    return data
+
+
+def plot_temperatures(
+    df: pd.DataFrame,
+    *,
+    title: str,
+    include_valve: bool = False,
+    valve_label: str = "Valve state",
+    height_scale: float = 1.0,
+    figsize: Tuple[float, float] | None = None,
+    axis_fontsize: float | None = None,
+    legend_fontsize: float | None = None,
+    title_fontsize: float | None = None,
+) -> Tuple[plt.Figure, plt.Axes]:
+    """Plot the main temperature channels for a dataset."""
+
+    data = _ensure_means(df)
+    if figsize is None:
+        figsize = (8, 4 * height_scale * 1.15)
+    fig, axis = plt.subplots(figsize=figsize)
+    axis.plot(data["t_min"], data["U1_bottom_C"], label="U1 bottom")
+    axis.plot(data["t_min"], data["U3_top_C"], label="U3 top")
+    axis.plot(data["t_min"], data["U2_coilTop_C"], label="U2 coil top")
+    axis.plot(data["t_min"], data["U4_coilMid_C"], label="U4 coil mid")
+    if "T_bulk_mean_C" in data.columns:
+        axis.plot(
+            data["t_min"],
+            data["T_bulk_mean_C"],
+            color="tab:purple",
+            linewidth=1,
+            linestyle="--",
+            label="Bulk mean",
+        )
+    if "T_coil_mean_C" in data.columns:
+        axis.plot(
+            data["t_min"],
+            data["T_coil_mean_C"],
+            color="tab:brown",
+            linestyle="--",
+            linewidth=1,
+            label="Coil mean",
+        )
+    axis.set_xlabel("Time (min)", fontsize=axis_fontsize)
+    axis.set_ylabel("Temperature (degC)", fontsize=axis_fontsize)
+    if title_fontsize is None:
+        axis.set_title(title)
+    else:
+        axis.set_title(title, fontsize=title_fontsize)
+    axis.grid(True, alpha=0.3)
+    if axis_fontsize is not None:
+        axis.tick_params(axis="both", labelsize=axis_fontsize)
+
+    handles, labels = axis.get_legend_handles_labels()
+    if include_valve and "valve_state" in data.columns:
+        times = data["t_min"].to_numpy()
+        valve = data["valve_state"].to_numpy()
+        shaded_label_used = False
+        dt_tail = times[-1] - times[-2] if times.size > 1 else 1.0
+        edge_end = times[-1] + dt_tail if times.size else 0.0
+        time_edges = np.concatenate([times, [edge_end]])
+
+        def add_span(t0: float, t1: float, label: str | None) -> None:
+            span = axis.axvspan(t0, t1, color="skyblue", alpha=0.35, label=label)
+            if label is not None:
+                handles.append(span)
+                labels.append(label)
+
+        if times.size > 0:
+            segment_start = 0
+            for index in range(1, times.size):
+                if valve[index] != valve[segment_start]:
+                    if valve[segment_start] >= 0.5:
+                        label = f"{valve_label} open" if valve_label and not shaded_label_used else None
+                        add_span(time_edges[segment_start], time_edges[index], label)
+                        shaded_label_used = True
+                    segment_start = index
+            if valve[segment_start] >= 0.5:
+                label = f"{valve_label} open" if valve_label and not shaded_label_used else None
+                add_span(time_edges[segment_start], time_edges[-1], label)
+
+    axis.legend(handles, labels, loc="best", fontsize=legend_fontsize)
+    fig.tight_layout()
+    return fig, axis
+
+
+def plot_power_and_flux(
+    df: pd.DataFrame,
+    *,
+    title_prefix: str,
+) -> Tuple[plt.Figure, plt.Axes, plt.Axes, plt.Axes]:
+    """Plot corrected HX power/UA and per-area flux side by side."""
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4), sharex=True)
+    ax_power, ax_flux = axes
+
+    ax_power.plot(df["t_min"], df["P_HX_W"], label="P_HX (W)")
+    ax_power.set_xlabel("Time (min)")
+    ax_power.set_ylabel("HX power (W)")
+
+    ax_power_right = ax_power.twinx()
+    ax_power_right.plot(df["t_min"], df["UA_corr_W_per_K"], color="tab:orange", label="UA (W/K)")
+    ax_power_right.set_ylabel("UA (W/K)")
+    ax_power.set_title(f"{title_prefix}: corrected power & UA")
+    ax_power.grid(True, alpha=0.3)
+
+    handles_left, labels_left = ax_power.get_legend_handles_labels()
+    handles_right, labels_right = ax_power_right.get_legend_handles_labels()
+    combined_handles = handles_left + handles_right
+    combined_labels = labels_left + labels_right
+    legend = ax_power.legend(combined_handles, combined_labels, loc="best")
+
+    try:
+        fig.canvas.draw()
+    except Exception:
+        pass
+
+    top_like_locs = {
+        0: "best",
+        1: "upper right",
+        2: "upper left",
+        5: "right",
+        7: "center right",
+        9: "upper center",
+        "upper right": "upper right",
+        "upper left": "upper left",
+        "right": "right",
+        "center right": "center right",
+        "upper center": "upper center",
+    }
+    legend_at_bottom = False
+    location_name = top_like_locs.get(getattr(legend, "_loc", None))
+    if location_name in {"upper right", "upper left", "upper center", "right", "center right"}:
+        legend.remove()
+        ax_power.legend(
+            combined_handles,
+            combined_labels,
+            loc="lower center",
+            bbox_to_anchor=(0.5, -0.25),
+            ncol=max(1, len(combined_handles)),
+            borderaxespad=0.0,
+        )
+        legend_at_bottom = True
+
+    if "P_HX_W_m2" in df.columns:
+        ax_flux.plot(df["t_min"], df["P_HX_W_m2"], label="Heat flux (W/m2)")
+    if "UA_per_area_W_per_m2K" in df.columns:
+        ax_flux.plot(df["t_min"], df["UA_per_area_W_per_m2K"], label="UA/area (W/m2-K)")
+    ax_flux.set_xlabel("Time (min)")
+    ax_flux.set_ylabel("Per-area values")
+    ax_flux.set_title(f"{title_prefix}: heat & UA flux")
+    ax_flux.grid(True, alpha=0.3)
+    ax_flux.legend(loc="best")
+
+    if legend_at_bottom:
+        fig.tight_layout(rect=(0, 0.18, 1, 1))
+    else:
+        fig.tight_layout()
+    return fig, ax_power, ax_flux, ax_power_right
+
+
+def plot_heat_leak_fit(
+    t_min: Iterable[float],
+    temperatures_C: Iterable[float],
+    predicted_C: Iterable[float],
+    *,
+    band_lower_C: Iterable[float] | None = None,
+    band_upper_C: Iterable[float] | None = None,
+    residuals_C: Iterable[float] | None = None,
+    band_label: str = "95% CI",
+    r_squared: float | None = None,
+) -> Tuple[plt.Figure, plt.Axes, plt.Axes]:
+    """Visualize a heat-leak fit with an optional confidence band and residuals."""
+
+    t_min_values = np.asarray(list(t_min), dtype=float)
+    temperatures = np.asarray(list(temperatures_C), dtype=float)
+    predicted = np.asarray(list(predicted_C), dtype=float)
+
+    fig, (axis, residual_axis) = plt.subplots(
+        2,
+        1,
+        figsize=(8, 4.8),
+        sharex=True,
+        gridspec_kw={"height_ratios": [3, 1]},
+    )
+
+    axis.plot(t_min_values, temperatures, label="Bulk mean", alpha=0.6)
+    axis.plot(t_min_values, predicted, color="tab:red", linewidth=2, label="Linear fit")
+    if band_lower_C is not None and band_upper_C is not None:
+        lower = np.asarray(list(band_lower_C), dtype=float)
+        upper = np.asarray(list(band_upper_C), dtype=float)
+        axis.fill_between(t_min_values, lower, upper, color="tab:red", alpha=0.2, label=band_label)
+
+    axis.set_ylabel("Temperature (degC)")
+    axis.set_title("Warm-up bulk temperature fit")
+
+    if r_squared is None:
+        centered = temperatures - temperatures.mean()
+        total_sum_sq = float(np.dot(centered, centered))
+        residual_sum_sq = float(np.dot(temperatures - predicted, temperatures - predicted))
+        r_value = 1.0 - residual_sum_sq / total_sum_sq if total_sum_sq > 0.0 else float("nan")
+    else:
+        r_value = float(r_squared)
+    if np.isfinite(r_value):
+        axis.text(
+            0.02,
+            0.05,
+            f"$R^2 = {r_value:.4f}$",
+            transform=axis.transAxes,
+            fontsize=10,
+            ha="left",
+            va="bottom",
+            bbox={"facecolor": "white", "alpha": 0.7, "edgecolor": "none"},
+        )
+    axis.legend(loc="best")
+
+    residuals = (
+        np.asarray(list(residuals_C), dtype=float)
+        if residuals_C is not None
+        else temperatures - predicted
+    )
+    residual_axis.plot(t_min_values, residuals, color="tab:gray", linewidth=1)
+    residual_axis.axhline(0.0, color="black", linestyle="--", linewidth=1)
+    residual_axis.set_xlabel("Time (min)")
+    residual_axis.set_ylabel("Residual (degC)")
+    residual_axis.set_title("Fit residuals")
+
+    fig.tight_layout()
+    return fig, axis, residual_axis

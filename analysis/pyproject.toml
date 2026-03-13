@@ -3,22 +3,24 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hfe-ana"
+name = "orca"
 version = "0.1.0"
-description = "Heat exchanger analysis helpers for the HFE System project."
+description = "ORCA: Operational Recirculation and Cryogenic Analysis for the HFE system."
 requires-python = ">=3.10"
 dependencies = [
     "matplotlib>=3.8",
     "numpy>=1.24",
     "pandas>=2.2",
+    "scipy>=1.11",
     "scikit-learn>=1.4",
 ]
 
 [project.scripts]
-hfe-hx = "hfe_ana.cli.hx_analyze:main"
+orca-hx = "orca.cli:main"
+hfe-hx = "orca.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-hfe_ana = ["py.typed"]
+orca = ["py.typed"]
