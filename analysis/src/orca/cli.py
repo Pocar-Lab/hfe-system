@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--out-summary",
-        default="data/reports/hx_summary.csv",
+        default="data/processed/hx_summary.csv",
         help="Output CSV for summary metrics.",
     )
     return parser

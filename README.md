@@ -49,7 +49,7 @@ After a computer reboot/reset or after unplugging/replugging the Arduino:
 
 ## Data Analysis
 - Command-line pipeline: `hfe-hx --input data/raw/<file>.csv`
-  - Outputs go to `data/processed/` and `data/reports/` (configurable via flags).
+  - Outputs go to `data/processed/` by default (configurable via flags).
 - Notebook: open `analysis/notebooks/HX_performance_analysis.ipynb` after installing the analysis package above.
 
 ## Git / GitHub

@@ -13,6 +13,8 @@ supervisor/.venv/
 
 # Python cache / compiled files
 __pycache__/
+.mypy_cache/
+.mypychache/
 *.py[cod]
 *.pyo
 *.egg-info/
