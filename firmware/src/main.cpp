@@ -2,6 +2,7 @@
 #include <Wire.h>
 #include <Adafruit_MAX31856.h>
 #include <math.h>
+#include <stdlib.h>
 
 // ── Shared software-SPI pins ─────────────────────────────────────────────
 constexpr int SCK_PIN  = 8;   // CLK
@@ -65,8 +66,10 @@ constexpr uint16_t REG_M09 = 0x0809;  // output frequency (0.01 Hz)
 constexpr uint8_t  N_M_REG = 4;       // M09–M12 inclusive
 
 // ── Control parameters ───────────────────────────────────────────────────
-constexpr float SETPOINT   = 25.0f;  // °C
-constexpr float HYSTERESIS = 0.5f;   // °C
+constexpr float DEFAULT_SETPOINT_C   = 25.0f;  // °C
+constexpr float LN_AUTO_HYSTERESIS_C = 0.5f;   // °C
+constexpr float LN_AUTO_THI_OFFSET_C = 5.0f;   // °C below setpoint for THI guard
+constexpr size_t THI_SENSOR_INDEX    = 9;      // U9 = THI
 
 // ── Valve/override state ─────────────────────────────────────────────────
 enum ValveState   : uint8_t { CLOSED = 0, OPEN = 1 };
@@ -74,6 +77,8 @@ enum OverrideMode : uint8_t { AUTO = 0, FORCE_OPEN = 1, FORCE_CLOSE = 2 };
 
 static ValveState   g_valve = CLOSED;
 static OverrideMode g_mode  = AUTO;
+static float        g_setpoint_c = DEFAULT_SETPOINT_C;
+static bool         g_ln_auto_flow_target_reached = false;
 static bool         g_heater_bottom_on = false;
 static bool         g_heater_exhaust_on = false;
 
@@ -476,6 +481,74 @@ static bool pollFlowMeter() {
   return true;
 }
 
+static bool tryParseFloat(const String& text, float *out) {
+  if (!out) return false;
+  String trimmed = text;
+  trimmed.trim();
+  if (!trimmed.length()) return false;
+  if (trimmed.length() >= 32) return false;
+
+  char buf[32];
+  trimmed.toCharArray(buf, sizeof(buf));
+
+  char *endPtr = nullptr;
+  const double value = strtod(buf, &endPtr);
+  if (endPtr == buf || (endPtr && *endPtr != '\0') || !isfinite(value)) return false;
+
+  *out = static_cast<float>(value);
+  return true;
+}
+
+static float flowTemperatureToC(float rawTemp) {
+  if (!isfinite(rawTemp)) return NAN;
+  // MFC400 temperature register is configured in Kelvin on this system. Keep a small
+  // heuristic so we do not corrupt values if the instrument is already sending °C.
+  return (rawTemp > 200.0f) ? (rawTemp - 273.15f) : rawTemp;
+}
+
+static void runAutoValveControl(const float temps[], size_t count) {
+  const float thiTemp =
+    (temps && count > THI_SENSOR_INDEX && isfinite(temps[THI_SENSOR_INDEX]))
+      ? temps[THI_SENSOR_INDEX]
+      : NAN;
+  const float flowTempC = g_flow.valid ? flowTemperatureToC(g_flow.temperatureRaw) : NAN;
+
+  // First stage: protect the HX inlet (THI) around setpoint - 5 °C until the flow meter
+  // temperature reaches the operator setpoint. After that we switch to FLM-based hold mode.
+  if (isfinite(flowTempC) && flowTempC <= g_setpoint_c) {
+    g_ln_auto_flow_target_reached = true;
+  }
+
+  if (g_ln_auto_flow_target_reached) {
+    if (!isfinite(flowTempC)) {
+      applyValve(CLOSED);
+      return;
+    }
+
+    const float reopenThreshold = g_setpoint_c + LN_AUTO_HYSTERESIS_C;
+    if (g_valve == OPEN && flowTempC <= g_setpoint_c) {
+      applyValve(CLOSED);
+    } else if (g_valve == CLOSED && flowTempC >= reopenThreshold) {
+      applyValve(OPEN);
+    }
+    return;
+  }
+
+  if (!isfinite(thiTemp)) {
+    applyValve(CLOSED);
+    return;
+  }
+
+  const float thiCloseThreshold = g_setpoint_c - LN_AUTO_THI_OFFSET_C;
+  const float thiReopenThreshold = thiCloseThreshold + LN_AUTO_HYSTERESIS_C;
+
+  if (g_valve == OPEN && thiTemp <= thiCloseThreshold) {
+    applyValve(CLOSED);
+  } else if (g_valve == CLOSED && thiTemp >= thiReopenThreshold) {
+    applyValve(OPEN);
+  }
+}
+
 static void handleCommand(const String& s) {
   String cmd = s; cmd.trim();
   if (!cmd.length()) return;
@@ -486,7 +559,26 @@ static void handleCommand(const String& s) {
   }
   else if (upper == "VALVE OPEN")       { g_mode = FORCE_OPEN;  applyValve(OPEN);   }
   else if (upper == "VALVE CLOSE") { g_mode = FORCE_CLOSE; applyValve(CLOSED); }
-  else if (upper == "VALVE AUTO")  { g_mode = AUTO; }
+  else if (upper == "VALVE AUTO")  {
+    g_mode = AUTO;
+    g_ln_auto_flow_target_reached = false;
+  }
+  else if (upper.startsWith("SETPOINT")) {
+    String rest = cmd.substring(8);
+    rest.trim();
+
+    float nextSetpoint = NAN;
+    if (!tryParseFloat(rest, &nextSetpoint)) {
+      Serial.println(F("# Invalid SETPOINT command"));
+      return;
+    }
+
+    g_setpoint_c = nextSetpoint;
+    g_ln_auto_flow_target_reached = false;
+    Serial.print(F("# Setpoint set to "));
+    Serial.print(g_setpoint_c, 2);
+    Serial.println(F(" C"));
+  }
   else if (upper == "HEATER BOTTOM ON")    { applyHeaterBottom(true); }
   else if (upper == "HEATER BOTTOM OFF")   { applyHeaterBottom(false); }
   else if (upper == "HEATER EXHAUST ON")   { applyHeaterExhaust(true); }
@@ -702,6 +794,18 @@ static void emitTelemetry(const float temps[], size_t count, unsigned long nowMs
     Serial.print(g_flow.densityKgM3, 6);
   }
   Serial.print('}');
+  Serial.print(F(",\"control\":{"));
+  Serial.print(F("\"setpoint_c\":"));
+  Serial.print(g_setpoint_c, 2);
+  Serial.print(F(",\"ln_hysteresis_c\":"));
+  Serial.print(LN_AUTO_HYSTERESIS_C, 2);
+  Serial.print(F(",\"thi_guard_offset_c\":"));
+  Serial.print(LN_AUTO_THI_OFFSET_C, 1);
+  Serial.print(F(",\"telemetry_interval_ms\":"));
+  Serial.print(SAMPLE_INTERVAL_MS);
+  Serial.print(F(",\"flow_target_reached\":"));
+  Serial.print(g_ln_auto_flow_target_reached ? F("true") : F("false"));
+  Serial.print('}');
   Serial.print(F(",\"heaters\":{"));
   Serial.print(F("\"bottom\":"));
   Serial.print(g_heater_bottom_on ? 1 : 0);
@@ -744,8 +848,8 @@ void setup() {
     tc[i]->setNoiseFilter(MAX31856_NOISE_FILTER_60HZ); // correct enum
   }
 
-  // JSON line telemetry: temps[0..9] (°C), valve (0/1), mode (A/O/C), pump{}, safety{}, fluid{}, heaters{}
-  Serial.println(F("# Telemetry keys: temps[0..9] (°C), valve (0/1), mode (A/O/C), pump{} (VFD + pressures), safety{} (latched interlocks), fluid{} (MFC400), heaters{bottom,exhaust}"));
+  // JSON line telemetry: temps[0..9] (°C), valve (0/1), mode (A/O/C), pump{}, safety{}, fluid{}, control{}, heaters{}
+  Serial.println(F("# Telemetry keys: temps[0..9] (°C), valve (0/1), mode (A/O/C), pump{} (VFD + pressures), safety{} (latched interlocks), fluid{} (MFC400), control{} (setpoint + LN auto), heaters{bottom,exhaust}"));
 }
 
 void loop() {
@@ -780,17 +884,9 @@ void loop() {
       temps_out[i] = (i < NUM_TCS) ? safeReadCelsius(tc[i]) : NAN;
     }
 
-    // Control: average valid of wired ones only
+    // Control: LN auto uses THI and the flow-meter temperature around the setpoint.
     if (g_mode == AUTO) {
-      int k = 0; double sum = 0.0;
-      for (size_t i = 0; i < NUM_TCS; ++i) if (isfinite(temps_out[i])) { sum += temps_out[i]; ++k; }
-      if (k > 0) {
-        float t_ctrl = (float)(sum / k);
-        if (g_valve == CLOSED && t_ctrl > SETPOINT + HYSTERESIS) applyValve(OPEN);
-        else if (g_valve == OPEN && t_ctrl < SETPOINT - HYSTERESIS) applyValve(CLOSED);
-      } else {
-        applyValve(CLOSED); // fail-safe
-      }
+      runAutoValveControl(temps_out, MAX_TCS_OUT);
     } else if (g_mode == FORCE_OPEN)  applyValve(OPEN);
     else if (g_mode == FORCE_CLOSE)   applyValve(CLOSED);
 

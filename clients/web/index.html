@@ -18,6 +18,7 @@
           <button type="button" class="page-tab" data-page="pump">Pump Control</button>
           <button type="button" class="page-tab" data-page="hx">Heat Exchanger</button>
           <button type="button" class="page-tab" data-page="fluids">Fluid Properties</button>
+          <button type="button" class="page-tab" data-page="pid">P&amp;ID</button>
         </nav>
         <div class="logging-controls button-row">
           <button id="logging-toggle" class="primary">Start Logging</button>
@@ -57,18 +58,13 @@
           <article class="overview-card">
             <h3>LN Valve</h3>
             <p id="overview-valve" class="overview-value sentence-case">—</p>
-            <p class="overview-hint">Shows current LN valve mode and state.</p>
-          </article>
-          <article class="overview-card">
-            <h3>Selected Average</h3>
-            <p id="overview-avg-temp" class="overview-value">—</p>
-            <p class="overview-hint">Average of sensors currently marked for control.</p>
+            <p class="overview-hint">Shows whether the LN valve is open or closed.</p>
           </article>
           <article class="overview-card">
             <h3>Pump ΔP</h3>
             <p id="overview-pump-delta-p" class="overview-value">—</p>
-            <p id="overview-pump-delta-p-sub" class="overview-subvalue muted">After pump - before pump</p>
-            <p class="overview-hint">Current differential between the existing before-pump and after-pump sensors.</p>
+            <p id="overview-pump-delta-p-sub" class="overview-subvalue muted"></p>
+            <p class="overview-hint">Pressure difference calculated from the PMO and PMI sensors.</p>
           </article>
         </section>
 
@@ -92,7 +88,7 @@
             <h2>Sensors</h2>
             <p id="sensor-count">Active: —</p>
             <p id="valid-count">Valid now: —</p>
-            <p id="valid-list" class="muted">Included sensors: —</p>
+            <p id="valid-list" class="muted">Valid temps: —</p>
             <div id="sensor-values" class="sensor-values-grid">
               <p class="muted">No telemetry yet.</p>
             </div>
@@ -130,7 +126,6 @@
                   </div>
                   <div class="form-actions pump-form-actions">
                     <button type="submit" class="primary">Set Speed</button>
-                    <button type="button" id="pump-stop-button" class="primary">Start Pump (5%)</button>
                   </div>
                   <p id="pump-safety-status" class="pump-note">Safety interlocks clear.</p>
                 </div>
@@ -190,12 +185,12 @@
             <h2>Loop Pressures</h2>
             <div class="metric-grid metrics-two">
               <div class="metric-block">
-                <span class="metric-label">Before Pump</span>
+                <span class="metric-label">PMI (Pump inlet)</span>
                 <span id="pump-pressure-before" class="metric-value">—</span>
                 <span id="pump-pressure-before-unit" class="metric-unit">(±0.05 bar)</span>
               </div>
               <div class="metric-block">
-                <span class="metric-label">After Pump</span>
+                <span class="metric-label">PMO (Pump outlet)</span>
                 <span id="pump-pressure-after" class="metric-value">—</span>
                 <span id="pump-pressure-after-unit" class="metric-unit">(±0.05 bar)</span>
               </div>
@@ -223,16 +218,6 @@
               <button data-cmd="VALVE AUTO">Auto</button>
             </div>
           </div>
-          <div class="stat-card">
-            <h2>Average (selected)</h2>
-            <p id="avg-temp">—</p>
-            <div id="sensor-selection" class="avg-selection">
-              <p class="muted">Sensors included in average:</p>
-              <div id="sensor-checkboxes" class="chip-grid">
-                <p class="muted">Awaiting telemetry…</p>
-              </div>
-            </div>
-          </div>
         </section>
 
         <section id="controls-section" class="controls-section hx-controls">
@@ -242,20 +227,10 @@
               <label>
                 Setpoint (°C)
                 <input type="number" id="setpoint-input" step="0.1" inputmode="decimal" value="25.0" />
-                <span class="form-hint">Desired temperature the controller tries to maintain.</span>
-              </label>
-              <label>
-                Hysteresis (°C)
-                <input type="number" id="hysteresis-input" step="0.1" inputmode="decimal" value="0.5" />
-                <span class="form-hint">Temperature band around the setpoint before the valve flips.</span>
-              </label>
-              <label>
-                Telemetry interval (ms)
-                <input type="number" id="telemetry-input" step="100" inputmode="numeric" value="1000" />
-                <span class="form-hint">How often the controller sends telemetry (in milliseconds).</span>
+                <span class="form-hint">Auto mode uses THI around setpoint minus 5 °C until FLM reaches the setpoint, then switches to FLM hold with fixed hysteresis.</span>
               </label>
               <div class="form-actions">
-                <button type="submit" class="primary">Apply</button>
+                <button type="submit" class="primary">Apply Setpoint</button>
               </div>
             </form>
           </div>
@@ -299,10 +274,10 @@
             <p class="overview-hint">Baseline fluid for the first commissioning runs.</p>
           </article>
           <article class="overview-card">
-            <h3>Tank Pressure</h3>
+            <h3>PTA</h3>
             <p id="fluid-tank-pressure" class="overview-value">—</p>
             <p id="fluid-tank-pressure-sub" class="overview-subvalue muted">(±0.05 bar)</p>
-            <p class="overview-hint">Live tank pressure reported by the pump pressure sensor.</p>
+            <p class="overview-hint">Tank pressure sensor.</p>
           </article>
         </section>
 
@@ -331,8 +306,8 @@
 
         <section class="stats-section fluid-analysis-grid">
           <div class="stat-card">
-            <h2>Temperature Increase</h2>
-            <p id="fluid-temp-rise" class="muted">Awaiting telemetry…</p>
+            <h2>Temperature Difference (TTO - TTI)</h2>
+            <p id="fluid-temp-rise" class="muted">Awaiting TTO and TTI temperatures</p>
           </div>
           <div class="stat-card">
             <h2>Viscosity Estimate</h2>
@@ -342,6 +317,92 @@
             <h2>Mixing Efficiency</h2>
             <p id="fluid-mixing-efficiency" class="muted">Awaiting telemetry…</p>
           </div>
+        </section>
+      </div>
+
+      <div class="page-panel" id="page-pid" data-page-panel="pid">
+        <section class="hero-card">
+          <h2>P&amp;ID</h2>
+          <p>
+            Process and instrumentation diagram for the HFE loop, with the component names used throughout this UI.
+          </p>
+        </section>
+
+        <section class="pid-layout">
+          <article class="stat-card pid-diagram-card">
+            <h2>System Diagram</h2>
+            <div class="pid-diagram-frame">
+              <img id="pid-diagram" src="assets/hfe-pid.svg" alt="HFE loop process and instrumentation diagram" />
+            </div>
+          </article>
+
+          <section class="pid-reference-grid">
+            <article class="stat-card">
+              <h2>Valves</h2>
+              <ul class="pid-reference-list">
+                <li><code>VNG</code> — valve, gaseous nitrogen</li>
+                <li><code>VNC</code> — valve, nitrogen to lab ceiling</li>
+                <li><code>VNO</code> — valve, nitrogen pressure regulator outlet</li>
+                <li><code>VNP</code> — valve, nitrogen pressure regulator</li>
+                <li><code>VNF</code> — valve, nitrogen fume hood</li>
+                <li><code>VLN</code> — valve, liquid nitrogen</li>
+                <li><code>VVC</code> — valve, vacuum</li>
+                <li><code>VMB</code> — valve, manifold bottom</li>
+                <li><code>VMT</code> — valve, manifold top</li>
+                <li><code>VCT</code> — cryogenic valve, tank</li>
+                <li><code>VCB</code> — cryogenic valve, bypass</li>
+                <li><code>VCF</code> — cryogenic valve, flow meter</li>
+                <li><code>VFL</code> — valve, feed line</li>
+                <li><code>VPR</code> — pressure relief valve, reservoir</li>
+                <li><code>VPM</code> — pressure relief valve, pump</li>
+                <li><code>VRD</code> — valve, reservoir downcomer</li>
+                <li><code>VRT</code> — valve, reservoir top</li>
+              </ul>
+            </article>
+
+            <article class="stat-card">
+              <h2>Sensors</h2>
+              <ul class="pid-reference-list">
+                <li><code>THI</code> — temperature, HEX inlet</li>
+                <li><code>THM</code> — temperature, HEX middle</li>
+                <li><code>TTI</code> — temperature, tank inlet</li>
+                <li><code>TTO</code> — temperature, tank outlet</li>
+                <li><code>TMI</code> — temperature, pump inlet</li>
+                <li><code>TFO</code> — temperature, flow meter outlet</li>
+                <li><code>PTA</code> — pressure, tank</li>
+                <li><code>PMI</code> — pressure, pump inlet</li>
+                <li><code>PMO</code> — pressure, pump outlet</li>
+                <li><code>PGT</code> — pressure gauge, gas trap</li>
+                <li><code>PGR</code> — pressure gauge, reservoir</li>
+                <li><code>FLM</code> — flow meter</li>
+              </ul>
+            </article>
+
+            <article class="stat-card">
+              <h2>Pumps And Heaters</h2>
+              <ul class="pid-reference-list">
+                <li><code>HTO</code> — heater, tank outlet</li>
+                <li><code>MFL</code> — pump, fluid</li>
+                <li><code>MVC</code> — pump, vacuum</li>
+              </ul>
+            </article>
+
+            <article class="stat-card">
+              <h2>Volumes And Equipment</h2>
+              <ul class="pid-reference-list">
+                <li><code>DWR</code> — dewar</li>
+                <li><code>GNC</code> — gaseous nitrogen cylinder</li>
+                <li><code>RSV</code> — reservoir</li>
+                <li><code>DRM</code> — drum</li>
+                <li><code>GTP</code> — gas trap</li>
+                <li><code>TNK</code> — tank</li>
+                <li><code>HEX</code> — heat exchanger</li>
+                <li><code>MNF</code> — manifold</li>
+                <li><code>LRT</code> — return line</li>
+                <li><code>LFD</code> — feed line</li>
+              </ul>
+            </article>
+          </section>
         </section>
       </div>
     </main>

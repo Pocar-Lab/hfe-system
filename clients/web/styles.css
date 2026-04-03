@@ -489,9 +489,16 @@ main {
 
 .sensor-values-grid {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 8px;
   margin-top: 4px;
+}
+
+.sensor-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
 }
 
 .sensor-chip {
@@ -515,6 +522,66 @@ main {
 .sensor-chip.inactive {
   opacity: 0.4;
   font-style: italic;
+}
+
+.sensor-chip.pressure-chip {
+  border-color: rgba(247, 183, 49, 0.35);
+  background: rgba(247, 183, 49, 0.08);
+}
+
+.pid-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pid-diagram-card {
+  overflow: hidden;
+}
+
+.pid-diagram-frame {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  overflow: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px;
+  max-height: min(72vh, 900px);
+}
+
+#pid-diagram {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  max-height: min(68vh, 860px);
+  height: auto;
+  min-width: 0;
+  margin: 0 auto;
+}
+
+.pid-reference-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.pid-reference-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+  color: var(--text-primary);
+}
+
+.pid-reference-list li {
+  line-height: 1.4;
+}
+
+.pid-reference-list code {
+  font-family: 'Roboto Mono', 'SFMono-Regular', Menlo, Consolas, monospace;
+  font-size: 0.95em;
 }
 
 .controls-section {
@@ -882,6 +949,10 @@ button:active:not(:disabled) {
 @media (max-width: 768px) {
   header h1 {
     font-size: 1.3rem;
+  }
+
+  #pid-diagram {
+    max-height: 60vh;
   }
 
   #status-bar {

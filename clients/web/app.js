@@ -13,6 +13,8 @@
   const PUMP_DELTA_P_ESTOP_LIMIT_BAR = 5.0;
   const PUMP_SAFETY_LAW_KEY = 'pump_delta_p_high';
   const PUMP_SAFETY_LAW_LABEL = 'Pump delta P high';
+  const TTI_SENSOR_INDEX = 3;
+  const TTO_SENSOR_INDEX = 7;
   const FLUID_REFERENCE = {
     name: 'HFE-7200',
     concentrationPct: 100.0,
@@ -98,11 +100,9 @@
   const vfdPowerUnitEl = document.getElementById('vfd-power-unit');
   const sensorCountEl = document.getElementById('sensor-count');
   const validCountEl = document.getElementById('valid-count');
-  const avgTempEl = document.getElementById('avg-temp');
   const validListEl = document.getElementById('valid-list');
   const overviewConnectionEl = document.getElementById('overview-connection');
   const overviewValveEl = document.getElementById('overview-valve');
-  const overviewAvgTempEl = document.getElementById('overview-avg-temp');
   const overviewPumpDeltaPEl = document.getElementById('overview-pump-delta-p');
   const overviewPumpDeltaPSubEl = document.getElementById('overview-pump-delta-p-sub');
   const sensorValuesEl = document.getElementById('sensor-values');
@@ -121,9 +121,6 @@
   const fluidMixingEfficiencyEl = document.getElementById('fluid-mixing-efficiency');
   const setpointForm = document.getElementById('setpoint-form');
   const setpointInput = document.getElementById('setpoint-input');
-  const hysteresisInput = document.getElementById('hysteresis-input');
-  const telemetryInput = document.getElementById('telemetry-input');
-  const sensorCheckboxesEl = document.getElementById('sensor-checkboxes');
   const chartSectionEl = document.getElementById('chart-section');
   const chartPanelEls = Array.from(chartSectionEl ? chartSectionEl.querySelectorAll('.chart-panel') : []);
   const tempChartCanvas = document.getElementById('temp-chart');
@@ -193,6 +190,29 @@
     '#ff9f1c',
   ];
   const PRESSURE_COLORS = ['#2d82ff', '#f7b731', '#2ecc71'];
+  const PRESSURE_SENSOR_METADATA = [
+    { key: 'pressure_before_bar_abs', tag: 'PMI', label: 'Pump inlet' },
+    { key: 'pressure_after_bar_abs', tag: 'PMO', label: 'Pump outlet' },
+    { key: 'pressure_tank_bar_abs', tag: 'PTA', label: 'Tank' },
+  ];
+  const SENSOR_METADATA = [
+    { tag: 'U0', label: 'Unassigned', connected: false },
+    { tag: 'U1', label: 'Unassigned', connected: false },
+    { tag: 'U2', label: 'Unassigned', connected: false },
+    { tag: 'TTI', label: 'Tank inlet', connected: true },
+    { tag: 'TFO', label: 'Flow meter outlet', connected: true },
+    { tag: 'U5', label: 'Unassigned', connected: false },
+    { tag: 'TMI', label: 'Pump inlet', connected: true },
+    { tag: 'TTO', label: 'Tank outlet', connected: true },
+    { tag: 'THM', label: 'HEX middle', connected: true },
+    { tag: 'THI', label: 'HEX inlet', connected: true },
+  ];
+  const CONNECTED_SENSOR_INDICES = SENSOR_METADATA.reduce((indices, meta, index) => {
+    if (meta && meta.connected) {
+      indices.push(index);
+    }
+    return indices;
+  }, []);
 
   function createLineDataset(label, color, extra = {}) {
     return {
@@ -208,13 +228,30 @@
     };
   }
 
+  function sensorMeta(index) {
+    return SENSOR_METADATA[index] || { tag: `U${index}`, label: 'Unassigned', connected: false };
+  }
+
+  function sensorShortName(index) {
+    return sensorMeta(index).tag;
+  }
+
+  function sensorLongName(index) {
+    const meta = sensorMeta(index);
+    return meta.connected ? `${meta.tag} (${meta.label})` : `U${index}`;
+  }
+
+  function visibleSensorIndices(sensorCount = MAX_SENSORS) {
+    return CONNECTED_SENSOR_INDICES.filter((index) => index < sensorCount);
+  }
+
   const sensorDatasets = Array.from({ length: MAX_SENSORS }, (_, idx) =>
-    createLineDataset(`U${idx}`, SENSOR_COLORS[idx % SENSOR_COLORS.length]),
+    createLineDataset(sensorShortName(idx), SENSOR_COLORS[idx % SENSOR_COLORS.length]),
   );
   const pressureDatasets = [
-    createLineDataset('Before Pump', PRESSURE_COLORS[0]),
-    createLineDataset('After Pump', PRESSURE_COLORS[1]),
-    createLineDataset('Tank', PRESSURE_COLORS[2]),
+    createLineDataset('PMI', PRESSURE_COLORS[0]),
+    createLineDataset('PMO', PRESSURE_COLORS[1]),
+    createLineDataset('PTA', PRESSURE_COLORS[2]),
   ];
 
   function sentenceCase(text) {
@@ -227,7 +264,6 @@
   }
 
   let currentSetpoint = SETPOINT;
-  let currentHysteresis = 0.5;
   let pumpMaxFreqHz = PUMP_MAX_FREQ_HZ;
   let lastPumpCmdPct = 0;
   let pumpRunning = false;
@@ -276,12 +312,16 @@
     };
   }
 
-  function createLegendOptions() {
-    return {
+  function createLegendOptions(filter) {
+    const options = {
       labels: {
         color: legendLabelColor,
       },
     };
+    if (typeof filter === 'function') {
+      options.labels.filter = filter;
+    }
+    return options;
   }
 
   const setpointDataset = {
@@ -326,7 +366,13 @@
             },
           },
           plugins: {
-            legend: createLegendOptions(),
+            legend: createLegendOptions((legendItem, data) => {
+              const dataset = data.datasets[legendItem.datasetIndex];
+              if (dataset === setpointDataset) {
+                return true;
+              }
+              return CONNECTED_SENSOR_INDICES.includes(legendItem.datasetIndex);
+            }),
             tooltip: {
               callbacks: {
                 label(context) {
@@ -404,13 +450,9 @@
 
   const MIN_CHART_CONTENT_HEIGHT = 300;
   const MAX_CHART_CONTENT_HEIGHT = 900;
-  const AUTO_COMMAND_COOLDOWN_MS = 1500;
   let pendingChartHeightFrame = null;
   let chartResizeObserver = null;
   setActivePage(activePage);
-  let autoValveDesiredState = null;
-  let autoValveLastCommandTs = 0;
-  let clientAutoActive = false;
 
   function computeChartContentHeight() {
     if (!chartSectionEl) {
@@ -517,8 +559,6 @@
   const setpointSeries = [];
   const pressureSeries = pressureDatasets.map(() => []);
 
-  let sensorSelections = Array(MAX_SENSORS).fill(true);
-  let renderedCheckboxCount = 0;
   let latestSnapshot = null;
   let loggingEnabled = false;
   let loggingRows = [];
@@ -615,53 +655,6 @@
     return '';
   }
 
-  function ensureSensorSelections(count) {
-    for (let i = 0; i < count; i += 1) {
-      if (typeof sensorSelections[i] !== 'boolean') {
-        sensorSelections[i] = true;
-      }
-    }
-  }
-
-  function renderSensorCheckboxes(count) {
-    if (!sensorCheckboxesEl) {
-      return;
-    }
-    sensorCheckboxesEl.innerHTML = '';
-    if (!count) {
-      sensorCheckboxesEl.innerHTML = '<p class="muted">No sensors detected yet.</p>';
-      renderedCheckboxCount = 0;
-      return;
-    }
-    ensureSensorSelections(count);
-    const fragment = document.createDocumentFragment();
-    for (let i = 0; i < count; i += 1) {
-      const label = document.createElement('label');
-      label.className = 'sensor-checkbox';
-      const input = document.createElement('input');
-      input.type = 'checkbox';
-      input.checked = sensorSelections[i] !== false;
-      input.dataset.index = String(i);
-      input.addEventListener('change', onSensorCheckboxChange);
-      const span = document.createElement('span');
-      span.textContent = `U${i}`;
-      label.appendChild(input);
-      label.appendChild(span);
-      fragment.appendChild(label);
-    }
-    sensorCheckboxesEl.appendChild(fragment);
-    renderedCheckboxCount = count;
-  }
-
-  function onSensorCheckboxChange(event) {
-    const idx = Number(event.currentTarget.dataset.index);
-    if (Number.isNaN(idx)) {
-      return;
-    }
-    sensorSelections[idx] = event.currentTarget.checked;
-    updateSensorStats();
-  }
-
   function updateSensorStats() {
     if (!latestSnapshot) {
       return;
@@ -670,57 +663,56 @@
     if (!sensorValuesEl) {
       return;
     }
-    if (sensorCount !== renderedCheckboxCount) {
-      renderSensorCheckboxes(sensorCount);
-    } else {
-      ensureSensorSelections(sensorCount);
-    }
+    const indices = visibleSensorIndices(sensorCount);
 
     let validNow = 0;
-    let selectedValid = 0;
-    let selectedSum = 0;
-    const selectedLabels = [];
-    const chips = [];
+    let pressureValid = 0;
+    const validLabels = [];
+    const tempChips = [];
+    const pressureChips = [];
+    const pump = latestSnapshot.pump && typeof latestSnapshot.pump === 'object' ? latestSnapshot.pump : null;
 
-    for (let i = 0; i < sensorCount; i += 1) {
+    for (const i of indices) {
       const value = temps[i];
       const finite = Number.isFinite(value);
-      const selected = sensorSelections[i] !== false;
       const classes = ['sensor-chip'];
-      if (selected) {
-        classes.push('selected');
-      } else {
-        classes.push('excluded');
-      }
       if (!finite) {
         classes.push('inactive');
       }
       const displayValue = finite ? formatThermocoupleTemperature(value) : '—';
-      chips.push(`<div class="${classes.join(' ')}">U${i}: ${displayValue}</div>`);
+      tempChips.push(`<div class="${classes.join(' ')}">${sensorLongName(i)}: ${displayValue}</div>`);
       if (finite) {
         validNow += 1;
-        if (selected) {
-          selectedValid += 1;
-          selectedSum += value;
-          selectedLabels.push(`U${i}`);
-        }
+        validLabels.push(sensorShortName(i));
       }
     }
 
-    sensorValuesEl.innerHTML = chips.length ? chips.join('') : '<p class="muted">No telemetry yet.</p>';
-    sensorCountEl.textContent = `Active: ${sensorCount}`;
-    validCountEl.textContent = `Valid now: ${validNow} • Selected: ${selectedValid}`;
-    validListEl.textContent = selectedLabels.length ? `Included sensors: ${selectedLabels.join(', ')}` : 'Included sensors: —';
-    const avgValue = selectedValid ? selectedSum / selectedValid : NaN;
-    avgTempEl.textContent = Number.isFinite(avgValue) ? formatThermocoupleTemperature(avgValue) : '—';
-    if (overviewAvgTempEl) {
-      overviewAvgTempEl.textContent = Number.isFinite(avgValue)
-        ? formatThermocoupleTemperature(avgValue)
-        : '—';
+    for (const pressureMeta of PRESSURE_SENSOR_METADATA) {
+      const value = pump ? finiteNumber(pump[pressureMeta.key]) : NaN;
+      const finite = Number.isFinite(value);
+      if (finite) {
+        pressureValid += 1;
+      }
+      pressureChips.push(
+        `<div class="sensor-chip pressure-chip${finite ? '' : ' inactive'}">${pressureMeta.tag} (${pressureMeta.label}): ${
+          finite ? `${value.toFixed(3)} bar` : '—'
+        }</div>`,
+      );
     }
+
+    const rows = [];
+    if (tempChips.length) {
+      rows.push(`<div class="sensor-chip-row">${tempChips.join('')}</div>`);
+    }
+    if (pressureChips.length) {
+      rows.push(`<div class="sensor-chip-row">${pressureChips.join('')}</div>`);
+    }
+
+    sensorValuesEl.innerHTML = rows.length ? rows.join('') : '<p class="muted">No connected sensor telemetry yet.</p>';
+    sensorCountEl.textContent = `Temps: ${indices.length} • Pressures: ${PRESSURE_SENSOR_METADATA.length}`;
+    validCountEl.textContent = `Temp valid: ${validNow} • Pressure valid: ${pressureValid}`;
+    validListEl.textContent = validLabels.length ? `Valid temps: ${validLabels.join(', ')}` : 'Valid temps: —';
     if (latestSnapshot) {
-      latestSnapshot.avgSelected = Number.isFinite(avgValue) ? avgValue : null;
-      latestSnapshot.selectedValid = selectedValid;
       updateFluidTelemetry(latestSnapshot.fluid, latestSnapshot.pump);
     }
     scheduleChartHeightUpdate();
@@ -1011,17 +1003,18 @@
   }
 
   function updatePumpSafetyStatus() {
-    const limitText = `${pumpSafetyState.limitBar.toFixed(3)} bar`;
+    const limitDigits = Number.isInteger(pumpSafetyState.limitBar) ? 0 : 3;
+    const limitText = `${pumpSafetyState.limitBar.toFixed(limitDigits)} bar`;
     const valueText = formatPressureValue(pumpSafetyState.valueBar);
     if (pumpSafetyStatusEl) {
       if (pumpSafetyState.resetRequired) {
         pumpSafetyStatusEl.textContent = `Emergency stop latched. ${pumpSafetyState.lawLabel} measured ${valueText} against a ${limitText} limit. Press Reset Emergency Stop once the condition is clear.`;
         setTone(pumpSafetyStatusEl, 'error');
       } else if (pumpSafetyState.available) {
-        pumpSafetyStatusEl.textContent = `Safety interlocks clear. Pump delta-P trip limit: ${limitText}.`;
+        pumpSafetyStatusEl.textContent = `Safety interlocks clear. Pump ΔP trip limit: ${limitText}.`;
         setTone(pumpSafetyStatusEl, 'success');
       } else {
-        pumpSafetyStatusEl.textContent = `Pump safety telemetry unavailable. Configured delta-P trip limit: ${limitText}.`;
+        pumpSafetyStatusEl.textContent = `Pump safety telemetry unavailable. Configured ΔP trip limit: ${limitText}.`;
         setTone(pumpSafetyStatusEl);
       }
     }
@@ -1030,7 +1023,7 @@
         overviewPumpDeltaPSubEl.textContent = 'Emergency stop latched';
         setTone(overviewPumpDeltaPSubEl, 'error');
       } else {
-        overviewPumpDeltaPSubEl.textContent = 'After pump - before pump';
+        overviewPumpDeltaPSubEl.textContent = '';
         setTone(overviewPumpDeltaPSubEl);
       }
     }
@@ -1399,15 +1392,19 @@
     }
 
     if (fluidTempRiseEl) {
-      const avgSelected =
-        latestSnapshot && Number.isFinite(latestSnapshot.avgSelected)
-          ? latestSnapshot.avgSelected
+      const tankInletTemp =
+        latestSnapshot && Array.isArray(latestSnapshot.temps)
+          ? finiteNumber(latestSnapshot.temps[TTI_SENSOR_INDEX])
           : NaN;
-      if (Number.isFinite(avgSelected) && Number.isFinite(fluidModel.temperature_c)) {
-        const proxyDelta = avgSelected - fluidModel.temperature_c;
-        fluidTempRiseEl.textContent = `${proxyDelta.toFixed(2)} °C`;
+      const tankOutletTemp =
+        latestSnapshot && Array.isArray(latestSnapshot.temps)
+          ? finiteNumber(latestSnapshot.temps[TTO_SENSOR_INDEX])
+          : NaN;
+      if (Number.isFinite(tankOutletTemp) && Number.isFinite(tankInletTemp)) {
+        const delta = tankOutletTemp - tankInletTemp;
+        fluidTempRiseEl.textContent = `${delta.toFixed(2)} °C`;
       } else {
-        fluidTempRiseEl.textContent = 'Awaiting inlet/outlet mapping';
+        fluidTempRiseEl.textContent = 'Awaiting TTO and TTI temperatures';
       }
     }
 
@@ -1440,12 +1437,22 @@
       startEpochSec = ts;
     }
     let tMin = (ts - startEpochSec) / 60;
+    const visibleIndices = new Set(visibleSensorIndices(sensorCount));
+    const control = data && typeof data.control === 'object' ? data.control : null;
+    const telemetrySetpoint = control ? finiteNumber(control.setpoint_c) : NaN;
+    if (Number.isFinite(telemetrySetpoint) && telemetrySetpoint !== currentSetpoint) {
+      currentSetpoint = telemetrySetpoint;
+      setpointDataset.label = setpointLabel();
+      if (setpointInput && document.activeElement !== setpointInput) {
+        setpointInput.value = currentSetpoint.toFixed(2);
+      }
+    }
 
     for (let i = 0; i < MAX_SENSORS; i += 1) {
       const value = Number.isFinite(temps[i]) ? temps[i] : null;
       pushSeries(sensorSeries[i], value === null ? { x: tMin, y: null } : { x: tMin, y: value });
       sensorDatasets[i].data = sensorSeries[i];
-      sensorDatasets[i].hidden = i >= sensorCount;
+      sensorDatasets[i].hidden = !visibleIndices.has(i);
     }
 
     pushSeries(setpointSeries, { x: tMin, y: currentSetpoint });
@@ -1484,9 +1491,7 @@
     const modeCharRaw = typeof data.mode === 'string' ? data.mode : '';
     const modeChar = modeCharRaw ? modeCharRaw.charAt(0).toUpperCase() : '';
     let modeText;
-    if (clientAutoActive) {
-      modeText = 'Auto';
-    } else if (modeChar === 'A') {
+    if (modeChar === 'A') {
       modeText = 'Auto';
     } else if (modeChar === 'O') {
       modeText = 'Forced open';
@@ -1497,11 +1502,7 @@
     }
     modeStateEl.textContent = `Mode: ${modeText}`;
     if (overviewValveEl) {
-      if (modeText && modeText !== '—') {
-        overviewValveEl.textContent = `${valveLabel} · ${modeText}`;
-      } else {
-        overviewValveEl.textContent = valveLabel;
-      }
+      overviewValveEl.textContent = valveLabel;
     }
 
     const heaters = data && typeof data.heaters === 'object' ? data.heaters : null;
@@ -1526,7 +1527,6 @@
     updatePumpTelemetry(pump, pumpSafetyState);
     updateSensorStats();
     updateFluidTelemetry(fluid, pump);
-    maybeRunAutoValve(valveOpen);
 
     if (!previousEmergencyStop && pumpSafetyState.resetRequired) {
       setCommandStatus(pumpSafetyState.message || 'Emergency stop triggered', 'error');
@@ -1577,61 +1577,6 @@
       console.error('Command error', err);
       setCommandStatus(`Command failed: ${err.message}`, 'error');
     }
-  }
-
-  // Auto mode: drive the physical valve based on the selected sensor average.
-  function maybeRunAutoValve(valveOpen) {
-    if (!clientAutoActive) {
-      autoValveDesiredState = null;
-      return;
-    }
-    if (!latestSnapshot || typeof latestSnapshot.avgSelected !== 'number') {
-      return;
-    }
-    const selectedValid =
-      typeof latestSnapshot.selectedValid === 'number' ? latestSnapshot.selectedValid : 0;
-    if (selectedValid <= 0) {
-      autoValveDesiredState = null;
-      return;
-    }
-    const avg = latestSnapshot.avgSelected;
-    if (!Number.isFinite(avg)) {
-      return;
-    }
-    const hysteresis =
-      Number.isFinite(currentHysteresis) && currentHysteresis > 0 ? currentHysteresis : 0;
-    const upperThreshold = currentSetpoint + hysteresis;
-    const lowerThreshold = currentSetpoint - hysteresis;
-
-    let desiredState = autoValveDesiredState;
-    if (desiredState === null) {
-      desiredState = valveOpen;
-    }
-
-    if (!valveOpen && avg > upperThreshold) {
-      desiredState = true;
-    } else if (valveOpen && avg < lowerThreshold) {
-      desiredState = false;
-    } else {
-      autoValveDesiredState = desiredState;
-      return;
-    }
-    if (desiredState === valveOpen) {
-      autoValveDesiredState = desiredState;
-      return;
-    }
-    const now = Date.now();
-    if (
-      autoValveDesiredState === desiredState &&
-      now - autoValveLastCommandTs < AUTO_COMMAND_COOLDOWN_MS
-    ) {
-      return;
-    }
-    autoValveDesiredState = desiredState;
-    autoValveLastCommandTs = now;
-    sendCommand(desiredState ? 'VALVE OPEN' : 'VALVE CLOSE', { suppressStatus: true }).catch(
-      () => {},
-    );
   }
 
   async function startLogging() {
@@ -1743,13 +1688,6 @@
       if (!cmd) {
         return;
       }
-      if (cmd === 'VALVE AUTO') {
-        clientAutoActive = true;
-        autoValveDesiredState = null;
-      } else if (cmd === 'VALVE OPEN' || cmd === 'VALVE CLOSE') {
-        clientAutoActive = false;
-        autoValveDesiredState = null;
-      }
       sendCommand(cmd);
     });
   });
@@ -1858,35 +1796,20 @@
         return;
       }
 
-      const hysteresis = hysteresisInput ? parseFloat(hysteresisInput.value) : NaN;
-      const telemetryMs = telemetryInput ? parseInt(telemetryInput.value, 10) : NaN;
-
-      const payload = {
-        id: 'set_control',
-        setpoint_C: setpoint,
-        hysteresis_C: Number.isFinite(hysteresis) ? hysteresis : 0.5,
-        telemetry_ms: Number.isFinite(telemetryMs) ? Math.max(100, telemetryMs) : 1000,
-      };
+      const command = `SETPOINT ${setpoint.toFixed(2)}`;
 
       try {
         setCommandStatus('Updating setpoint…', 'info');
         await apiJson('/api/command', {
           method: 'POST',
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ cmd: command }),
         });
-        currentSetpoint = payload.setpoint_C;
-        currentHysteresis = payload.hysteresis_C;
+        currentSetpoint = setpoint;
         setpointSeries.length = 0;
         setpointDataset.data = setpointSeries;
         setpointDataset.label = setpointLabel();
         if (setpointInput) {
-          setpointInput.value = payload.setpoint_C.toFixed(2);
-        }
-        if (hysteresisInput) {
-          hysteresisInput.value = payload.hysteresis_C.toFixed(2);
-        }
-        if (telemetryInput) {
-          telemetryInput.value = String(payload.telemetry_ms);
+          setpointInput.value = currentSetpoint.toFixed(2);
         }
         if (latestSnapshot) {
           updateSensorStats();
@@ -1894,7 +1817,7 @@
         if (chart) {
           chart.update('none');
         }
-        setCommandStatus(`Setpoint set to ${payload.setpoint_C.toFixed(2)} °C`, 'success');
+        setCommandStatus(`Setpoint set to ${currentSetpoint.toFixed(2)} °C`, 'success');
       } catch (err) {
         console.error('Setpoint update failed', err);
         setCommandStatus(`Setpoint update failed: ${err.message}`, 'error');
@@ -1920,20 +1843,10 @@
   if (setpointInput) {
     setpointInput.value = currentSetpoint.toFixed(2);
   }
-  if (hysteresisInput) {
-    const initialH = parseFloat(hysteresisInput.value);
-    const safeH = Number.isFinite(initialH) ? initialH : 0.5;
-    hysteresisInput.value = safeH.toFixed(2);
-    currentHysteresis = safeH;
-  }
-  if (telemetryInput && (!telemetryInput.value || Number(telemetryInput.value) <= 0)) {
-    telemetryInput.value = '1000';
-  }
 
   syncPumpInputs(lastPumpCmdPct, { force: true });
   updatePumpSafetyStatus();
   updatePumpActionButtons();
-  renderSensorCheckboxes(0);
 
   updateLoggingStatusLabel();
   updateLoggingButtonState();
