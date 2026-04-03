@@ -17,7 +17,6 @@ import pandas as pd
 from matplotlib.artist import Artist
 from matplotlib.offsetbox import AnchoredOffsetbox, TextArea, VPacker
 from matplotlib.transforms import Bbox
-from scipy.optimize import curve_fit
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RAW_DATA_DIR = REPO_ROOT / "data" / "raw"
@@ -119,7 +118,7 @@ class AveragedTrace:
 
 @dataclass(frozen=True)
 class ExponentialFit:  # pylint: disable=too-many-instance-attributes
-    """Free-asymptote exponential fit results."""
+    """Exponential pressure-decay fit results."""
 
     asymptote_bar: float
     asymptote_err_bar: float
@@ -253,9 +252,11 @@ class ReservoirPressureLogResult:  # pylint: disable=too-many-instance-attribute
     series: PressureSeries
     averaged: AveragedTrace
     fit: ExponentialFit | None
+    linear_fit: LinearPressureRiseFit | None
     leak: LeakEstimate | None
     fit_curve_time_h: np.ndarray | None
     fit_curve_pressure_bar: np.ndarray | None
+    fit_curve_label: str | None
     rmse_mbar: float | None
     warning: str | None = None
 
@@ -852,65 +853,16 @@ def make_weighted_average_trace(
     )
 
 
-def free_asymptote_exponential_model(
+def fixed_tail_exponential_model(
     time_h: np.ndarray,
-    asymptote_bar: float,
     amplitude_bar: float,
     k_per_h: float,
+    *,
+    asymptote_bar: float = P_ATM_BAR,
 ) -> np.ndarray:
-    """Exponential decay toward a fitted asymptotic pressure."""
+    """Exponential decay toward a fixed asymptotic pressure."""
 
     return asymptote_bar + amplitude_bar * np.exp(k_per_h * time_h)
-
-
-def initial_fit_guess(pressure_abs_bar: np.ndarray) -> tuple[float, float, float]:
-    """Build a stable initial guess for the free-asymptote exponential fit."""
-
-    tail_guess_bar = float(np.mean(pressure_abs_bar[max(len(pressure_abs_bar) - 60, 0) :]))
-    amplitude_guess_bar = max(float(pressure_abs_bar[0] - tail_guess_bar), 1e-6)
-    return tail_guess_bar, amplitude_guess_bar, -0.4
-
-
-def fit_system_pressure_decay(
-    time_h: np.ndarray,
-    pressure_abs_bar: np.ndarray,
-    pressure_sigma_bar: float | np.ndarray,
-    *,
-    asymptote_bounds_bar: tuple[float, float] = (0.0, np.inf),
-) -> ExponentialFit:
-    """Fit the averaged absolute pressure trace with a free asymptote."""
-
-    sigma_bar = np.maximum(np.asarray(pressure_sigma_bar, dtype=float), 1e-12)
-    asymptote_min_bar, asymptote_max_bar = asymptote_bounds_bar
-    bounds = ([asymptote_min_bar, 0.0, -np.inf], [asymptote_max_bar, np.inf, 0.0])
-    params, covariance = curve_fit(
-        free_asymptote_exponential_model,
-        time_h,
-        pressure_abs_bar,
-        p0=initial_fit_guess(pressure_abs_bar),
-        sigma=sigma_bar,
-        absolute_sigma=True,
-        bounds=bounds,
-        maxfev=20000,
-    )
-    asymptote_bar = float(params[0])
-    amplitude_bar = float(params[1])
-    k_per_h = float(params[2])
-    asymptote_err_bar = float(np.sqrt(covariance[0, 0]))
-    amplitude_err_bar = float(np.sqrt(covariance[1, 1]))
-    k_err_per_h = float(np.sqrt(covariance[2, 2]))
-    tau_h = -1.0 / k_per_h
-    tau_err_h = k_err_per_h / (k_per_h**2)
-    return ExponentialFit(
-        asymptote_bar=asymptote_bar,
-        asymptote_err_bar=asymptote_err_bar,
-        amplitude_bar=amplitude_bar,
-        amplitude_err_bar=amplitude_err_bar,
-        k_per_h=k_per_h,
-        k_err_per_h=k_err_per_h,
-        tau_h=float(tau_h),
-        tau_err_h=float(tau_err_h),
-    )
 
 
 def fit_fixed_tail_exponential_with_band(
@@ -946,7 +898,12 @@ def fit_fixed_tail_exponential_with_band(
 
     log_fit = log_amplitude_bar + k_per_h * x_eval_h
     pressure_gauge_fit_bar = np.exp(log_fit)
-    pressure_abs_fit_bar = asymptote_bar + pressure_gauge_fit_bar
+    pressure_abs_fit_bar = fixed_tail_exponential_model(
+        x_eval_h,
+        amplitude_bar,
+        k_per_h,
+        asymptote_bar=asymptote_bar,
+    )
 
     design_eval = np.column_stack((np.ones_like(x_eval_h), x_eval_h))
     log_variance = np.einsum("ij,jk,ik->i", design_eval, cov_log_amplitude_k, design_eval)
@@ -961,6 +918,23 @@ def fit_fixed_tail_exponential_with_band(
         cov_log_amplitude_k=cov_log_amplitude_k,
     )
     return fit, pressure_abs_fit_bar, pressure_abs_sigma_bar
+
+
+def fixed_tail_fit_to_exponential_fit(fit: FixedTailExponentialFit) -> ExponentialFit:
+    """Convert a fixed-tail exponential fit into the shared exponential-fit container."""
+
+    tau_h = -1.0 / fit.k_per_h
+    tau_err_h = fit.k_err_per_h / (fit.k_per_h**2)
+    return ExponentialFit(
+        asymptote_bar=fit.asymptote_bar,
+        asymptote_err_bar=0.0,
+        amplitude_bar=fit.amplitude_bar,
+        amplitude_err_bar=fit.amplitude_err_bar,
+        k_per_h=fit.k_per_h,
+        k_err_per_h=fit.k_err_per_h,
+        tau_h=float(tau_h),
+        tau_err_h=float(tau_err_h),
+    )
 
 
 def fit_linear_pressure_rise_with_band(
@@ -1123,6 +1097,12 @@ def compute_start_decay_metrics(fit: FixedTailExponentialFit) -> tuple[float, fl
     return 1000.0 * start_decay_bar_per_h, 1000.0 * start_decay_err_bar_per_h
 
 
+def linear_pressure_drop_metrics(fit: LinearPressureRiseFit) -> tuple[float, float]:
+    """Return the fitted linear pressure-drop rate as positive mbar/h for a decay."""
+
+    return -1000.0 * fit.slope_bar_per_h, 1000.0 * fit.slope_err_bar_per_h
+
+
 def rmse_bar(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     """Return the root-mean-square error in bar."""
 
@@ -1167,7 +1147,7 @@ def pressure_drop_fit_warning(
     )
     if net_drop_bar <= endpoint_sigma_bar:
         return f"{label}: no clear pressure drop; fit skipped."
-    if fit.k_per_h >= 0.0 or abs(fit.k_per_h) <= fit.k_err_per_h:
+    if fit.k_per_h >= 0.0:
         return f"{label}: pressure-drop fit not constrained; fit skipped."
     return None
 
@@ -1180,7 +1160,6 @@ def analyze_pressure_drop_log(  # pylint: disable=too-many-arguments
     pressure_error_column: str,
     room_temp_column: str | None,
     bin_width_min: float,
-    asymptote_bounds_bar: tuple[float, float],
     warning_label: str,
 ) -> tuple[
     PressureSeries,
@@ -1215,12 +1194,15 @@ def analyze_pressure_drop_log(  # pylint: disable=too-many-arguments
     warning_message: str | None = None
 
     try:
-        candidate_fit = fit_system_pressure_decay(
+        candidate_curve_time_h = np.linspace(0.0, float(averaged.time_h[-1]), 500)
+        fixed_tail_fit, candidate_curve_pressure_bar, _ = fit_fixed_tail_exponential_with_band(
             averaged.time_h,
             averaged.pressure_abs_bar,
             averaged.pressure_sigma_bar,
-            asymptote_bounds_bar=asymptote_bounds_bar,
+            candidate_curve_time_h,
+            asymptote_bar=P_ATM_BAR,
         )
+        candidate_fit = fixed_tail_fit_to_exponential_fit(fixed_tail_fit)
         warning_message = pressure_drop_fit_warning(
             averaged,
             candidate_fit,
@@ -1228,21 +1210,16 @@ def analyze_pressure_drop_log(  # pylint: disable=too-many-arguments
         )
         if warning_message is None:
             fit = candidate_fit
-            fit_curve_time_h = np.linspace(0.0, float(averaged.time_h[-1]), 500)
-            fit_curve_pressure_bar = free_asymptote_exponential_model(
-                fit_curve_time_h,
-                fit.asymptote_bar,
-                fit.amplitude_bar,
-                fit.k_per_h,
-            )
-            averaged_fit_bar = free_asymptote_exponential_model(
+            fit_curve_time_h = candidate_curve_time_h
+            fit_curve_pressure_bar = candidate_curve_pressure_bar
+            averaged_fit_bar = fixed_tail_exponential_model(
                 averaged.time_h,
-                fit.asymptote_bar,
                 fit.amplitude_bar,
                 fit.k_per_h,
+                asymptote_bar=fit.asymptote_bar,
             )
             rmse_mbar = 1000.0 * rmse_bar(averaged.pressure_abs_bar, averaged_fit_bar)
-    except (RuntimeError, ValueError) as exc:
+    except (np.linalg.LinAlgError, RuntimeError, ValueError) as exc:
         warning_message = f"{warning_label}: fit failed ({exc}); showing measurements only."
 
     if warning_message is not None:
@@ -1277,7 +1254,6 @@ def analyze_system_pressure_log(csv_path: str | Path) -> SystemPressureResult:
         pressure_error_column=PRESSURE_ERR_COLUMN,
         room_temp_column=ROOM_TEMP_COLUMN,
         bin_width_min=BIN_WIDTH_MIN,
-        asymptote_bounds_bar=(0.0, np.inf),
         warning_label="System",
     )
     mean_pressure = compute_mean_system_pressure(series.room_temp_c)
@@ -1320,9 +1296,7 @@ def analyze_reservoir_pressure_log(  # pylint: disable=too-many-arguments
 ) -> ReservoirPressureLogResult:
     """Run a system-style pressure-drop analysis for a logged reservoir test."""
 
-    resolved_path = resolve_pressure_log_path(csv_path)
     resolved_slug = slug if slug is not None else slugify_case_label(label)
-    default_source_note = f"Source log: {resolved_path.name}"
     (
         series,
         averaged,
@@ -1332,15 +1306,32 @@ def analyze_reservoir_pressure_log(  # pylint: disable=too-many-arguments
         rmse_mbar,
         warning_message,
     ) = analyze_pressure_drop_log(
-        resolved_path,
+        csv_path,
         pressure_abs_column=pressure_abs_column,
         pressure_gauge_column=pressure_gauge_column,
         pressure_error_column=pressure_error_column,
         room_temp_column=room_temp_column,
         bin_width_min=bin_width_min,
-        asymptote_bounds_bar=(P_ATM_BAR, np.inf),
         warning_label=label,
     )
+    default_source_note = f"Source log: {series.csv_path.name}"
+
+    linear_fit: LinearPressureRiseFit | None = None
+    linear_fit_curve_time_h: np.ndarray | None = None
+    linear_fit_curve_pressure_bar: np.ndarray | None = None
+    try:
+        linear_fit_curve_time_h = np.linspace(0.0, float(averaged.time_h[-1]), 500)
+        linear_fit, linear_fit_curve_pressure_bar, _ = fit_linear_pressure_rise_with_band(
+            averaged.time_h,
+            averaged.pressure_abs_bar,
+            averaged.pressure_sigma_bar,
+            linear_fit_curve_time_h,
+        )
+    except np.linalg.LinAlgError:
+        linear_fit = None
+        linear_fit_curve_time_h = None
+        linear_fit_curve_pressure_bar = None
+
     leak = None
     if fit is not None:
         leak = compute_hfe_equivalent_leak(
@@ -1350,6 +1341,19 @@ def analyze_reservoir_pressure_log(  # pylint: disable=too-many-arguments
             leak_test_volume_l=volume_l,
             hfe_temp_c=series.room_temp_c,
         )
+
+    display_fit_curve_time_h = fit_curve_time_h
+    display_fit_curve_pressure_bar = fit_curve_pressure_bar
+    display_fit_curve_label = "Exponential fit" if fit_curve_time_h is not None else None
+    if fit is None and linear_fit_curve_time_h is not None and linear_fit_curve_pressure_bar is not None:
+        display_fit_curve_time_h = linear_fit_curve_time_h
+        display_fit_curve_pressure_bar = linear_fit_curve_pressure_bar
+        display_fit_curve_label = "Linear fit"
+        fitted_pressure_bar = linear_fit.intercept_bar + linear_fit.slope_bar_per_h * averaged.time_h
+        rmse_mbar = 1000.0 * rmse_bar(averaged.pressure_abs_bar, fitted_pressure_bar)
+        if warning_message is not None:
+            warning_message = f"{warning_message} Linear fit shown for comparison."
+
     return ReservoirPressureLogResult(
         label=label,
         slug=resolved_slug,
@@ -1360,9 +1364,11 @@ def analyze_reservoir_pressure_log(  # pylint: disable=too-many-arguments
         series=series,
         averaged=averaged,
         fit=fit,
+        linear_fit=linear_fit,
         leak=leak,
-        fit_curve_time_h=fit_curve_time_h,
-        fit_curve_pressure_bar=fit_curve_pressure_bar,
+        fit_curve_time_h=display_fit_curve_time_h,
+        fit_curve_pressure_bar=display_fit_curve_pressure_bar,
+        fit_curve_label=display_fit_curve_label,
         rmse_mbar=rmse_mbar,
         warning=warning_message,
     )
@@ -1636,6 +1642,7 @@ def plot_pressure_drop_trace(  # pylint: disable=too-many-arguments,too-many-loc
     source_note: str,
     fit_curve_time_h: np.ndarray | None = None,
     fit_curve_pressure_bar: np.ndarray | None = None,
+    fit_curve_label: str = "Pressure drop fit",
     value_box_title: str | None = None,
     value_box_lines: Sequence[str] | None = None,
     warning: str | None = None,
@@ -1666,7 +1673,7 @@ def plot_pressure_drop_trace(  # pylint: disable=too-many-arguments,too-many-loc
             fit_curve_pressure_bar,
             color="tab:green",
             linewidth=3.0,
-            label="Pressure drop fit",
+            label=fit_curve_label,
         )
 
     y_samples = [
@@ -1898,23 +1905,29 @@ def plot_reservoir_pressure_log_result(
         export_reservoir_pressure_log_plot_data(result, data_path)
 
     value_box_lines: list[str] | None = None
-    if result.leak is not None:
+    if result.linear_fit is not None:
         operating_abs_bar = P_ATM_BAR + result.operating_gauge_bar
+        linear_drop_mbar_h, linear_drop_err_mbar_h = linear_pressure_drop_metrics(
+            result.linear_fit
+        )
         value_box_lines = [
             f"Volume: {result.volume_l:.0f} L",
             f"Pressure: {operating_abs_bar:.2f} bar abs (HFE vapor)",
-            (
+            f"Pressure drop (linear fit): {linear_drop_mbar_h:.2f} ± {linear_drop_err_mbar_h:.2f} mbar/h",
+        ]
+        if result.leak is not None:
+            value_box_lines.append(
                 "HFE-7200 liquid-equivalent loss (from vapor leak): "
                 f"{format_leak_annotation_line(result.leak, unit='L/year', use_hfe_loss=True)}"
-            ),
-        ]
+            )
     return plot_pressure_drop_trace(
         result.averaged,
         title=f"Reservoir Pressure Drop - {result.label}",
         source_note=result.source_note,
         fit_curve_time_h=result.fit_curve_time_h,
         fit_curve_pressure_bar=result.fit_curve_pressure_bar,
-        value_box_title="HFE-equivalent values" if value_box_lines is not None else None,
+        fit_curve_label=result.fit_curve_label or "Pressure drop fit",
+        value_box_title="Pressure-drop values" if value_box_lines is not None else None,
         value_box_lines=value_box_lines,
         warning=result.warning,
         output_path=output_path,
@@ -2318,6 +2331,16 @@ def reservoir_pressure_log_summary_table(
                 "end_pressure_bar_abs": float(result.series.pressure_abs_bar[-1]),
                 "volume_l": result.volume_l,
                 "operating_pressure_bar_abs": P_ATM_BAR + result.operating_gauge_bar,
+                "linear_pressure_drop_mbar_h": (
+                    np.nan
+                    if result.linear_fit is None
+                    else -1000.0 * result.linear_fit.slope_bar_per_h
+                ),
+                "linear_pressure_drop_err_mbar_h": (
+                    np.nan
+                    if result.linear_fit is None
+                    else 1000.0 * result.linear_fit.slope_err_bar_per_h
+                ),
                 "leak_mbar_l_s": (
                     np.nan if result.leak is None else result.leak.throughput_mbar_l_per_s
                 ),

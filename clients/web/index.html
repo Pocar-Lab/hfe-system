@@ -21,6 +21,7 @@
         </nav>
         <div class="logging-controls button-row">
           <button id="logging-toggle" class="primary">Start Logging</button>
+          <button id="global-pump-stop-button" class="primary">Start Pump (5%)</button>
         </div>
       </div>
     </header>
@@ -64,14 +65,26 @@
             <p class="overview-hint">Average of sensors currently marked for control.</p>
           </article>
           <article class="overview-card">
-            <h3>Tank Pressure</h3>
-            <p id="overview-tank-pressure" class="overview-value">—</p>
-            <p id="overview-tank-pressure-sub" class="overview-subvalue muted">(±0.05 bar)</p>
+            <h3>Pump ΔP</h3>
+            <p id="overview-pump-delta-p" class="overview-value">—</p>
+            <p id="overview-pump-delta-p-sub" class="overview-subvalue muted">After pump - before pump</p>
+            <p class="overview-hint">Current differential between the existing before-pump and after-pump sensors.</p>
           </article>
         </section>
 
         <section id="chart-section">
-          <canvas id="temp-chart" aria-label="Temperature chart"></canvas>
+          <article class="chart-panel">
+            <h2>Temperature Trend</h2>
+            <div class="chart-panel-body">
+              <canvas id="temp-chart" aria-label="Temperature chart"></canvas>
+            </div>
+          </article>
+          <article class="chart-panel">
+            <h2>Pressure Trend</h2>
+            <div class="chart-panel-body">
+              <canvas id="pressure-chart" aria-label="Pressure chart"></canvas>
+            </div>
+          </article>
         </section>
 
         <section id="stats-section">
@@ -116,9 +129,10 @@
                     </label>
                   </div>
                   <div class="form-actions pump-form-actions">
-                    <button type="submit" class="primary half-width">Set Speed</button>
-                    <button type="button" id="pump-stop-button" class="danger half-width">Stop</button>
+                    <button type="submit" class="primary">Set Speed</button>
+                    <button type="button" id="pump-stop-button" class="primary">Start Pump (5%)</button>
                   </div>
+                  <p id="pump-safety-status" class="pump-note">Safety interlocks clear.</p>
                 </div>
                 <div class="pump-status-col">
                   <div class="pump-pill">
@@ -285,10 +299,10 @@
             <p class="overview-hint">Baseline fluid for the first commissioning runs.</p>
           </article>
           <article class="overview-card">
-            <h3>ΔP</h3>
-            <p id="fluid-pressure-drop" class="overview-value">—</p>
-            <p id="fluid-pressure-drop-sub" class="overview-subvalue muted">After pump - before pump</p>
-            <p class="overview-hint">Current differential between the existing before-pump and after-pump sensors.</p>
+            <h3>Tank Pressure</h3>
+            <p id="fluid-tank-pressure" class="overview-value">—</p>
+            <p id="fluid-tank-pressure-sub" class="overview-subvalue muted">(±0.05 bar)</p>
+            <p class="overview-hint">Live tank pressure reported by the pump pressure sensor.</p>
           </article>
         </section>
 

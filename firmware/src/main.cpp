@@ -35,6 +35,8 @@ constexpr uint32_t VFD_BAUD          = 9600;    // y04
 constexpr unsigned long VFD_POLL_MS  = 1000UL;  // poll M09–M12 once per second
 
 // ── Flow meter (KROHNE MFC400 via DFR0845 on Serial2) ───────────────────
+// MFC400 Modbus supplement (ER 1.0) maps 30000..30008 as five float input registers:
+// Flow Velocity, Volume Flow, Mass Flow, Temperature, Density.
 constexpr uint8_t  FLOW_SLAVE_ADDR   = 1;
 constexpr uint32_t FLOW_BAUD         = 19200;
 constexpr unsigned long FLOW_POLL_MS = 1000UL;
@@ -56,6 +58,7 @@ constexpr float   ADC_REF_V           = 5.0f;     // default analog reference (5
 constexpr float   PSI_PER_BAR         = 14.5037738f;
 constexpr float   ATMOSPHERE_BAR      = 1.01325f; // add for absolute pressure display
 constexpr float   PRESSURE_AFTER_ZERO_V = 0.029f; // 1 atm output for after-pump sensor
+constexpr float   PUMP_DELTA_P_ESTOP_BAR = 5.0f;  // emergency-stop threshold for after-before pressure delta
 
 // Modbus group M registers (Fuji FRENIC-Mini)
 constexpr uint16_t REG_M09 = 0x0809;  // output frequency (0.01 Hz)
@@ -110,6 +113,27 @@ struct FlowSnapshot {
 };
 
 static FlowSnapshot g_flow = { false, NAN, NAN, NAN, NAN, NAN, 0 };
+
+enum SafetyLawIndex : uint8_t {
+  SAFETY_LAW_PUMP_DELTA_P_HIGH = 0,
+};
+
+struct SafetyLawState {
+  const char* key;
+  const char* label;
+  bool  enabled;
+  bool  active;
+  bool  tripped;
+  float limitBar;
+  float valueBar;
+};
+
+static SafetyLawState g_safety_laws[] = {
+  { "pump_delta_p_high", "Pump delta P high", true, false, false, PUMP_DELTA_P_ESTOP_BAR, NAN },
+};
+
+static bool          g_emergency_stop_latched = false;
+static unsigned long g_emergency_stop_ms = 0;
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 static float readPressureVolts(uint8_t pin) {
@@ -177,6 +201,95 @@ static float setPumpCommandPct(float pct) {
   return g_pump_cmd_pct;
 }
 
+static size_t safetyLawCount() {
+  return sizeof(g_safety_laws) / sizeof(g_safety_laws[0]);
+}
+
+static int firstSafetyLawIndexByState(bool wantActive) {
+  for (size_t i = 0; i < safetyLawCount(); ++i) {
+    const bool match = wantActive ? g_safety_laws[i].active : g_safety_laws[i].tripped;
+    if (match) return static_cast<int>(i);
+  }
+  return -1;
+}
+
+static bool canResetEmergencyStop() {
+  for (size_t i = 0; i < safetyLawCount(); ++i) {
+    if (g_safety_laws[i].enabled && g_safety_laws[i].active) return false;
+  }
+  return true;
+}
+
+static void triggerEmergencyStop(size_t idx, unsigned long nowMs) {
+  if (idx >= safetyLawCount()) return;
+  SafetyLawState &law = g_safety_laws[idx];
+  if (!law.enabled) return;
+
+  setPumpCommandPct(0.0f);
+  g_emergency_stop_latched = true;
+  g_emergency_stop_ms = nowMs;
+
+  if (law.tripped) return;
+
+  law.tripped = true;
+  Serial.print(F("# Emergency stop tripped: "));
+  Serial.print(law.key);
+  if (isfinite(law.valueBar)) {
+    Serial.print(F(" ("));
+    Serial.print(law.valueBar, 3);
+    Serial.print(F(" bar > "));
+    Serial.print(law.limitBar, 3);
+    Serial.print(F(" bar)"));
+  }
+  Serial.println();
+}
+
+static void updatePumpDeltaPSafety(float pressureBeforeBar, float pressureAfterBar, unsigned long nowMs) {
+  SafetyLawState &law = g_safety_laws[SAFETY_LAW_PUMP_DELTA_P_HIGH];
+  const float deltaPBar =
+    (isfinite(pressureBeforeBar) && isfinite(pressureAfterBar))
+      ? (pressureAfterBar - pressureBeforeBar)
+      : NAN;
+
+  law.valueBar = deltaPBar;
+  law.active = law.enabled && isfinite(deltaPBar) && (deltaPBar > law.limitBar);
+
+  if (law.active) {
+    triggerEmergencyStop(SAFETY_LAW_PUMP_DELTA_P_HIGH, nowMs);
+  }
+}
+
+static void resetEmergencyStopIfSafe() {
+  if (!g_emergency_stop_latched) {
+    Serial.println(F("# Emergency stop already cleared"));
+    return;
+  }
+
+  if (!canResetEmergencyStop()) {
+    const int idx = firstSafetyLawIndexByState(true);
+    Serial.print(F("# Emergency stop reset blocked"));
+    if (idx >= 0) {
+      const SafetyLawState &law = g_safety_laws[idx];
+      Serial.print(F(": "));
+      Serial.print(law.key);
+      if (isfinite(law.valueBar)) {
+        Serial.print(F(" still at "));
+        Serial.print(law.valueBar, 3);
+        Serial.print(F(" bar"));
+      }
+    }
+    Serial.println();
+    return;
+  }
+
+  for (size_t i = 0; i < safetyLawCount(); ++i) {
+    g_safety_laws[i].tripped = false;
+  }
+  g_emergency_stop_latched = false;
+  g_emergency_stop_ms = 0;
+  Serial.println(F("# Emergency stop reset"));
+}
+
 // Modbus RTU CRC16
 static uint16_t modbusCRC(const uint8_t *data, size_t len) {
   uint16_t crc = 0xFFFF;
@@ -195,6 +308,7 @@ static uint16_t modbusCRC(const uint8_t *data, size_t len) {
 }
 
 static float regsToFloatBE(const uint16_t *regs) {
+  // MFC400 C6.8.4 defaults to Big Endian for multi-register values.
   union {
     uint32_t u32;
     float f32;
@@ -367,7 +481,10 @@ static void handleCommand(const String& s) {
   if (!cmd.length()) return;
 
   String upper = cmd; upper.toUpperCase();
-  if (upper == "VALVE OPEN")       { g_mode = FORCE_OPEN;  applyValve(OPEN);   }
+  if (upper == "ESTOP RESET" || upper == "EMERGENCY STOP RESET" || upper == "SAFETY RESET") {
+    resetEmergencyStopIfSafe();
+  }
+  else if (upper == "VALVE OPEN")       { g_mode = FORCE_OPEN;  applyValve(OPEN);   }
   else if (upper == "VALVE CLOSE") { g_mode = FORCE_CLOSE; applyValve(CLOSED); }
   else if (upper == "VALVE AUTO")  { g_mode = AUTO; }
   else if (upper == "HEATER BOTTOM ON")    { applyHeaterBottom(true); }
@@ -392,6 +509,10 @@ static void handleCommand(const String& s) {
     }
 
     if (isfinite(pct)) {
+      if (g_emergency_stop_latched && pct > 0.0f) {
+        Serial.println(F("# Pump command blocked by emergency stop; send ESTOP RESET once safe"));
+        return;
+      }
       float applied = setPumpCommandPct(pct);
       Serial.print(F("# Pump cmd set to "));
       Serial.print(applied, 3);
@@ -415,6 +536,7 @@ static void emitTelemetry(const float temps[], size_t count, unsigned long nowMs
                           float pressureAfterVolts) {
   const float t_s = nowMs / 1000.0f;
   const char modeChar = (g_mode == AUTO) ? 'A' : (g_mode == FORCE_OPEN ? 'O' : 'C');
+  const int trippedLawIdx = firstSafetyLawIndexByState(false);
 
   Serial.print(F("{\"type\":\"telemetry\""));
   Serial.print(F(",\"t\":"));
@@ -509,6 +631,54 @@ static void emitTelemetry(const float temps[], size_t count, unsigned long nowMs
   Serial.print(F(",\"pressure_error_bar\":"));
   Serial.print(PRESSURE_ERR_BAR, 3);
   Serial.print('}');
+  Serial.print(F(",\"safety\":{"));
+  Serial.print(F("\"emergency_stop\":"));
+  Serial.print(g_emergency_stop_latched ? F("true") : F("false"));
+  Serial.print(F(",\"reset_required\":"));
+  Serial.print(g_emergency_stop_latched ? F("true") : F("false"));
+  Serial.print(F(",\"tripped_ms\":"));
+  if (g_emergency_stop_latched) Serial.print(g_emergency_stop_ms);
+  else                          Serial.print(F("null"));
+  Serial.print(F(",\"active_reason\":"));
+  if (trippedLawIdx >= 0) {
+    Serial.print('"');
+    Serial.print(g_safety_laws[trippedLawIdx].key);
+    Serial.print('"');
+  } else {
+    Serial.print(F("null"));
+  }
+  Serial.print(F(",\"message\":"));
+  if (trippedLawIdx >= 0) {
+    Serial.print(F("\"Emergency stop: "));
+    Serial.print(g_safety_laws[trippedLawIdx].label);
+    Serial.print('"');
+  } else {
+    Serial.print(F("null"));
+  }
+  Serial.print(F(",\"laws\":{"));
+  for (size_t i = 0; i < safetyLawCount(); ++i) {
+    const SafetyLawState &law = g_safety_laws[i];
+    Serial.print('"');
+    Serial.print(law.key);
+    Serial.print(F("\":{"));
+    Serial.print(F("\"label\":\""));
+    Serial.print(law.label);
+    Serial.print(F("\",\"enabled\":"));
+    Serial.print(law.enabled ? F("true") : F("false"));
+    Serial.print(F(",\"active\":"));
+    Serial.print(law.active ? F("true") : F("false"));
+    Serial.print(F(",\"tripped\":"));
+    Serial.print(law.tripped ? F("true") : F("false"));
+    Serial.print(F(",\"limit_bar\":"));
+    Serial.print(law.limitBar, 3);
+    Serial.print(F(",\"value_bar\":"));
+    if (isfinite(law.valueBar)) Serial.print(law.valueBar, 3);
+    else                        Serial.print(F("null"));
+    Serial.print(F(",\"units\":\"bar\"}"));
+    if (i + 1 < safetyLawCount()) Serial.print(',');
+  }
+  Serial.print(F("}"));
+  Serial.print('}');
   Serial.print(F(",\"fluid\":{"));
   Serial.print(F("\"name\":\""));
   Serial.print(FLUID_NAME);
@@ -574,8 +744,8 @@ void setup() {
     tc[i]->setNoiseFilter(MAX31856_NOISE_FILTER_60HZ); // correct enum
   }
 
-  // JSON line telemetry: temps[0..9] (°C), valve (0/1), mode (A/O/C), pump{}, fluid{}, heaters{}
-  Serial.println(F("# Telemetry keys: temps[0..9] (°C), valve (0/1), mode (A/O/C), pump{} (VFD + pressures), fluid{} (MFC400), heaters{bottom,exhaust}"));
+  // JSON line telemetry: temps[0..9] (°C), valve (0/1), mode (A/O/C), pump{}, safety{}, fluid{}, heaters{}
+  Serial.println(F("# Telemetry keys: temps[0..9] (°C), valve (0/1), mode (A/O/C), pump{} (VFD + pressures), safety{} (latched interlocks), fluid{} (MFC400), heaters{bottom,exhaust}"));
 }
 
 void loop() {
@@ -631,6 +801,8 @@ void loop() {
     float pressureBeforeBar = voltsToBar(pressureBeforeVolts);
     float pressureAfterBar  = voltsToBarAfter(pressureAfterVolts);
     float pressureTankBar   = voltsToBar(pressureTankVolts);
+
+    updatePumpDeltaPSafety(pressureBeforeBar, pressureAfterBar, now);
 
     emitTelemetry(temps_out, MAX_TCS_OUT, now,
                   pressureBeforeBar, pressureAfterBar, pressureTankBar,

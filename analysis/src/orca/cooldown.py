@@ -22,6 +22,9 @@ Important remaining modeling uncertainties:
   assumption. The legacy notebook used 15 mm; the packaged default here is
   2 mm because the larger film suppressed HX UA enough that the calibrated
   model could not reproduce the cooldown behavior implied elsewhere in the repo.
+* The external HFE-side coil coupling is intentionally modeled with a simple
+  flow-only HTC surrogate anchored near the nominal operating point. The repo
+  no longer carries a viscosity-driven transport correlation in this model.
 * The model now uses 6 m of 1/4 in OD stainless tubing for the heat
   exchanger, which gives about 0.12 m^2 of external area and matches the
   latest confirmed hardware description.
@@ -135,6 +138,9 @@ class SystemModel:
     insulation_conductivity_w_mk: float = 0.03
     stagnant_hfe_film_thickness_m: float = 0.002
     hfe_liquid_conductivity_w_mk: float = 0.065
+    outer_hfe_htc_reference_w_m2k: float = 120.0
+    outer_hfe_htc_reference_flow_lpm: float = 2.0
+    outer_hfe_htc_flow_exponent: float = 0.5
     ln2_density_kg_m3: float = 808.0
     ln2_latent_heat_j_kg: float = 1.99e5
     n2_gas_cp_j_kgk: float = 1_040.0
@@ -306,18 +312,6 @@ def hfe_specific_heat_j_kgk(temp_k: float) -> float:
     return max(900.0, 1_220.0 + 1.5 * (temp_k - 298.0))
 
 
-def hfe_dynamic_viscosity_pa_s(temp_k: float) -> float:
-    """Approximate HFE-7200 dynamic viscosity."""
-
-    return 6.0e-4 * (298.0 / max(temp_k, 1.0)) ** 1.5
-
-
-def hfe_conductivity_w_mk(_: float) -> float:
-    """Approximate HFE-7200 thermal conductivity."""
-
-    return 0.065
-
-
 def thermal_capacity_j_per_k(model: SystemModel, temp_k: float) -> float:
     """Return total lumped heat capacity of HFE plus steel hardware."""
 
@@ -457,32 +451,19 @@ def coil_outer_hfe_htc_w_m2k(
     temp_k: float,
     hfe_flow_lpm: float,
 ) -> float:
-    """Estimate the HFE-side external HTC around the coil."""
+    """Estimate the HFE-side external HTC around the coil.
 
-    flow_m3_s = lpm_to_m3_s(hfe_flow_lpm)
-    if flow_m3_s <= 0.0:
+    The simplified cooldown model keeps only a flow-rate dependence here.
+    ``temp_k`` is retained for API compatibility with existing callers but is
+    not used in the surrogate.
+    """
+
+    if hfe_flow_lpm <= 0.0:
         return 0.0
 
-    cross_section_area_m2 = model.tank.cross_section_area_m2
-    velocity_m_s = flow_m3_s / max(cross_section_area_m2, 1e-12)
-    density = hfe_density_kg_m3(temp_k)
-    viscosity = hfe_dynamic_viscosity_pa_s(temp_k)
-    conductivity = hfe_conductivity_w_mk(temp_k)
-    reynolds = density * velocity_m_s * model.heat_exchanger.outer_diameter_m / max(
-        viscosity, 1e-12
-    )
-    if reynolds < 1e-9:
-        return 0.0
-
-    prandtl = (
-        hfe_specific_heat_j_kgk(temp_k) * viscosity / max(conductivity, 1e-12)
-    )
-    nusselt = 0.3 + (
-        (0.62 * reynolds**0.5 * prandtl ** (1.0 / 3.0))
-        / (1.0 + (0.4 / max(prandtl, 1e-12)) ** (2.0 / 3.0)) ** 0.25
-        * (1.0 + (reynolds / 282_000.0) ** 0.625) ** 0.8
-    )
-    return nusselt * conductivity / max(model.heat_exchanger.outer_diameter_m, 1e-12)
+    reference_flow_lpm = max(model.outer_hfe_htc_reference_flow_lpm, 1e-12)
+    flow_ratio = max(hfe_flow_lpm, 0.0) / reference_flow_lpm
+    return model.outer_hfe_htc_reference_w_m2k * flow_ratio**model.outer_hfe_htc_flow_exponent
 
 
 def hx_ua_w_per_k(

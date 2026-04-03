@@ -41,17 +41,54 @@ if not CFG_PATH.exists():
 with CFG_PATH.open("r") as f:
     CFG = yaml.safe_load(f) or {}
 
+
+def _normalize_token(value: object, default: str) -> str:
+    text = str(value or default).strip().lower()
+    replacements = {
+        " ": "_",
+        "/": "_",
+        "-": "_",
+        "°": "",
+        "³": "3",
+        "^3": "3",
+    }
+    for source, target in replacements.items():
+        text = text.replace(source, target)
+    return text
+
+
 ENV_TOKEN = (os.getenv("SUPERVISOR_TOKEN") or "").strip()
 CFG_TOKEN = (CFG.get("server", {}).get("auth_token") or "").strip()
 AUTH_TOKEN = ENV_TOKEN or CFG_TOKEN
-FLOW_TEMPERATURE_SOURCE_UNIT = str(
-    (CFG.get("flow_meter", {}) or {}).get("temperature_source_unit") or "fahrenheit"
-).strip().lower()
+FLOW_METER_CFG = CFG.get("flow_meter", {}) or {}
+FLOW_TEMPERATURE_SOURCE_UNIT = _normalize_token(
+    FLOW_METER_CFG.get("temperature_source_unit"), "kelvin"
+)
+FLOW_VELOCITY_SOURCE_UNIT = _normalize_token(
+    FLOW_METER_CFG.get("flow_velocity_unit"), "m_s"
+)
+FLOW_VOLUME_FLOW_SOURCE_UNIT = _normalize_token(
+    FLOW_METER_CFG.get("volume_flow_unit"), "m3_s"
+)
+FLOW_MASS_FLOW_SOURCE_UNIT = _normalize_token(
+    FLOW_METER_CFG.get("mass_flow_unit"), "kg_s"
+)
+FLOW_DENSITY_SOURCE_UNIT = _normalize_token(
+    FLOW_METER_CFG.get("density_unit"), "kg_m3"
+)
 
 log.info(
     "Auth required: %s; token prefix: %s",
     bool(AUTH_TOKEN),
     (AUTH_TOKEN[:8] + "…") if AUTH_TOKEN else "(none)",
+)
+log.info(
+    "Flow meter source units: velocity=%s volume=%s mass=%s temp=%s density=%s",
+    FLOW_VELOCITY_SOURCE_UNIT,
+    FLOW_VOLUME_FLOW_SOURCE_UNIT,
+    FLOW_MASS_FLOW_SOURCE_UNIT,
+    FLOW_TEMPERATURE_SOURCE_UNIT,
+    FLOW_DENSITY_SOURCE_UNIT,
 )
 
 # Ensure data directory exists if configured (even if we don't write yet)
@@ -154,25 +191,13 @@ MAX_LOG_SENSORS = 10
 RAW_LOG_DIR = REPO / "data" / "raw"
 PUMP_LOG_FIELDS: list[tuple[str, str, str]] = [
     ("pump_cmd_pct", "cmd_pct", "{:.3f}"),
-    ("pump_cmd_hz", "cmd_hz", "{:.3f}"),
     ("pump_freq_hz", "freq_hz", "{:.3f}"),
-    ("pump_freq_pct", "freq_pct", "{:.2f}"),
     ("pump_input_power_w", "input_power_w", "{:.2f}"),
-    ("pump_input_power_pct", "input_power_pct", "{:.2f}"),
     ("pump_output_current_a", "output_current_a", "{:.3f}"),
-    ("pump_output_current_pct", "output_current_pct", "{:.2f}"),
     ("pump_output_voltage_v", "output_voltage_v", "{:.2f}"),
-    ("pump_output_voltage_pct", "output_voltage_pct", "{:.2f}"),
-    ("pump_pressure_before_bar", "pressure_before_bar", "{:.3f}"),
-    ("pump_pressure_after_bar", "pressure_after_bar", "{:.3f}"),
-    ("pump_pressure_tank_bar", "pressure_tank_bar", "{:.3f}"),
     ("pump_pressure_before_bar_abs", "pressure_before_bar_abs", "{:.3f}"),
     ("pump_pressure_after_bar_abs", "pressure_after_bar_abs", "{:.3f}"),
     ("pump_pressure_tank_bar_abs", "pressure_tank_bar_abs", "{:.3f}"),
-    ("pump_pressure_after_v", "pressure_after_v", "{:.3f}"),
-    ("pump_pressure_before_psi", "pressure_before_psi", "{:.2f}"),
-    ("pump_pressure_after_psi", "pressure_after_psi", "{:.2f}"),
-    ("pump_pressure_tank_psi", "pressure_tank_psi", "{:.2f}"),
     ("pump_pressure_error_bar", "pressure_error_bar", "{:.3f}"),
     ("pump_max_freq_hz", "max_freq_hz", "{:.3f}"),
 ]
@@ -182,7 +207,6 @@ FLUID_LOG_FIELDS: list[tuple[str, str, str]] = [
     ("fluid_flow_velocity_mps", "flow_velocity_mps", "{:.6f}"),
     ("fluid_volume_flow_m3s", "volume_flow_m3s", "{:.9f}"),
     ("fluid_mass_flow_kgs", "mass_flow_kgs", "{:.9f}"),
-    ("fluid_temperature_raw", "temperature_raw", "{:.6f}"),
     ("fluid_temperature_c", "temperature_c", "{:.3f}"),
     ("fluid_density_kg_m3", "density_kg_m3", "{:.6f}"),
     ("fluid_delta_p_bar", "delta_p_bar", "{:.3f}"),
@@ -197,15 +221,89 @@ def _finite_float(value: object) -> float | None:
     return None
 
 
+_FLOW_VELOCITY_TO_MPS = {
+    "m_s": 1.0,
+    "mps": 1.0,
+    "meter_per_second": 1.0,
+    "meters_per_second": 1.0,
+    "ft_s": 0.3048,
+    "fps": 0.3048,
+    "foot_per_second": 0.3048,
+    "feet_per_second": 0.3048,
+}
+_VOLUME_FLOW_TO_M3S = {
+    "m3_s": 1.0,
+    "m3_min": 1.0 / 60.0,
+    "m3_h": 1.0 / 3600.0,
+    "l_s": 1.0e-3,
+    "l_min": 1.0e-3 / 60.0,
+    "l_h": 1.0e-3 / 3600.0,
+    "gal_s": 0.003785411784,
+    "gpm": 0.003785411784 / 60.0,
+    "gal_min": 0.003785411784 / 60.0,
+    "gal_h": 0.003785411784 / 3600.0,
+    "ig_s": 0.00454609,
+    "ig_min": 0.00454609 / 60.0,
+    "ig_h": 0.00454609 / 3600.0,
+    "cf_s": 0.028316846592,
+    "cf_min": 0.028316846592 / 60.0,
+    "cf_h": 0.028316846592 / 3600.0,
+}
+_MASS_FLOW_TO_KGS = {
+    "kg_s": 1.0,
+    "kg_min": 1.0 / 60.0,
+    "kg_h": 1.0 / 3600.0,
+    "g_s": 1.0e-3,
+    "g_min": 1.0e-3 / 60.0,
+    "g_h": 1.0e-3 / 3600.0,
+    "lb_s": 0.45359237,
+    "lb_min": 0.45359237 / 60.0,
+    "lb_h": 0.45359237 / 3600.0,
+}
+_DENSITY_TO_KG_M3 = {
+    "kg_m3": 1.0,
+    "kg_l": 1000.0,
+    "lb_gal": 0.45359237 / 0.003785411784,
+    "lb_cf": 0.45359237 / 0.028316846592,
+    "sg": 1000.0,
+}
+
+
+def _convert_with_factor(value: object, factor_map: dict[str, float], unit_key: str) -> float | None:
+    raw = _finite_float(value)
+    if raw is None:
+        return None
+    factor = factor_map.get(unit_key)
+    if factor is None:
+        return raw
+    return raw * factor
+
+
 def _flow_temperature_to_c(raw_value: object) -> float | None:
     raw = _finite_float(raw_value)
     if raw is None:
         return None
-    if FLOW_TEMPERATURE_SOURCE_UNIT == "fahrenheit":
+    if FLOW_TEMPERATURE_SOURCE_UNIT in {"fahrenheit", "f"}:
         return (raw - 32.0) * 5.0 / 9.0
-    if FLOW_TEMPERATURE_SOURCE_UNIT == "kelvin":
+    if FLOW_TEMPERATURE_SOURCE_UNIT in {"kelvin", "k"}:
         return raw - 273.15
     return raw
+
+
+def _flow_velocity_to_mps(raw_value: object) -> float | None:
+    return _convert_with_factor(raw_value, _FLOW_VELOCITY_TO_MPS, FLOW_VELOCITY_SOURCE_UNIT)
+
+
+def _volume_flow_to_m3s(raw_value: object) -> float | None:
+    return _convert_with_factor(raw_value, _VOLUME_FLOW_TO_M3S, FLOW_VOLUME_FLOW_SOURCE_UNIT)
+
+
+def _mass_flow_to_kgs(raw_value: object) -> float | None:
+    return _convert_with_factor(raw_value, _MASS_FLOW_TO_KGS, FLOW_MASS_FLOW_SOURCE_UNIT)
+
+
+def _density_to_kg_m3(raw_value: object) -> float | None:
+    return _convert_with_factor(raw_value, _DENSITY_TO_KG_M3, FLOW_DENSITY_SOURCE_UNIT)
 
 
 def _fluid_delta_p_bar(pump: dict) -> float | None:
@@ -216,13 +314,39 @@ def _fluid_delta_p_bar(pump: dict) -> float | None:
     return after - before
 
 
-def _build_fluid_log_values(payload: dict) -> dict:
+def _normalize_telemetry_payload(payload: dict) -> dict:
+    if not isinstance(payload, dict) or payload.get("type") != "telemetry":
+        return payload
+    if payload.get("_units_normalized"):
+        return payload
+
     fluid_raw = payload.get("fluid")
+    fluid = fluid_raw if isinstance(fluid_raw, dict) else None
+    if fluid is None:
+        normalized = dict(payload)
+        normalized["_units_normalized"] = True
+        return normalized
+
+    normalized_fluid = dict(fluid)
+    normalized_fluid["flow_velocity_mps"] = _flow_velocity_to_mps(fluid.get("flow_velocity_mps"))
+    normalized_fluid["volume_flow_m3s"] = _volume_flow_to_m3s(fluid.get("volume_flow_m3s"))
+    normalized_fluid["mass_flow_kgs"] = _mass_flow_to_kgs(fluid.get("mass_flow_kgs"))
+    normalized_fluid["temperature_c"] = _flow_temperature_to_c(fluid.get("temperature_raw"))
+    normalized_fluid["density_kg_m3"] = _density_to_kg_m3(fluid.get("density_kg_m3"))
+
+    normalized = dict(payload)
+    normalized["fluid"] = normalized_fluid
+    normalized["_units_normalized"] = True
+    return normalized
+
+
+def _build_fluid_log_values(payload: dict) -> dict:
+    normalized = _normalize_telemetry_payload(payload)
+    fluid_raw = normalized.get("fluid")
     fluid = fluid_raw if isinstance(fluid_raw, dict) else {}
-    pump_raw = payload.get("pump")
+    pump_raw = normalized.get("pump")
     pump = pump_raw if isinstance(pump_raw, dict) else {}
     values = dict(fluid)
-    values["temperature_c"] = _flow_temperature_to_c(fluid.get("temperature_raw"))
     values["delta_p_bar"] = _fluid_delta_p_bar(pump)
     return values
 
@@ -428,7 +552,8 @@ async def lifespan(app: FastAPI):
     async def broadcaster():
         """Fan-out any message placed on q_live to all connected WS clients."""
         while True:
-            msg = await app.state.q_live.get()
+            raw_msg = await app.state.q_live.get()
+            msg = _normalize_telemetry_payload(raw_msg)
             _maybe_log_telemetry(app.state, msg)
             dead: list[WebSocket] = []
             # Broadcast to clients

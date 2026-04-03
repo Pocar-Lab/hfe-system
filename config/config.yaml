@@ -7,6 +7,15 @@ server:
   port: 8010
   auth_token: ""            # leave empty; we’ll use env var instead
 
+flow_meter:
+  # Site-specific override for this converter. The local MFC400 Modbus supplement documents
+  # register 30000..30008 as [m/s], [m3/s], [kg/s], [K], [kg/m3].
+  flow_velocity_unit: "ft/s"
+  volume_flow_unit: "gal/min"       # interpreted as US gallons per minute
+  mass_flow_unit: "lb/min"
+  temperature_source_unit: "fahrenheit"
+  density_unit: "lb/gal"
+
 logging:
   parquet_dir: "/home/pocar-lab/Documents/HFE_System/data"
   batch_size: 200

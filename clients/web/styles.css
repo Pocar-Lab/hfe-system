@@ -25,6 +25,8 @@ body {
   --button-primary-hover: #166ff2;
   --button-danger: #ff4d4f;
   --button-danger-hover: #ff2f34;
+  --alert-bg: rgba(255, 77, 79, 0.18);
+  --alert-text: #ff8a8c;
   --valve-open-bg: rgba(46, 204, 113, 0.2);
   --valve-open-text: #2ecc71;
   --valve-closed-bg: rgba(236, 240, 241, 0.14);
@@ -47,6 +49,8 @@ body {
     --button-primary-hover: #1558cc;
     --button-danger: #e03131;
     --button-danger-hover: #c92a2a;
+    --alert-bg: rgba(224, 49, 49, 0.14);
+    --alert-text: #b42318;
     --valve-open-bg: rgba(46, 204, 113, 0.15);
     --valve-open-text: #117a3d;
     --valve-closed-bg: rgba(0, 0, 0, 0.05);
@@ -130,6 +134,14 @@ header .brand {
   color: #2ecc71;
 }
 
+.status-chip[data-tone='error'] {
+  color: var(--button-danger);
+}
+
+.status-chip[data-tone='warn'] {
+  color: #f7b731;
+}
+
 .overview-subvalue {
   margin: 4px 0 0 0;
   color: var(--text-secondary);
@@ -138,6 +150,10 @@ header .brand {
 
 .overview-subvalue:empty {
   display: none;
+}
+
+.overview-subvalue[data-tone='error'] {
+  color: var(--button-danger);
 }
 
 main {
@@ -249,6 +265,10 @@ main {
 
 .overview-value[data-tone='success'] {
   color: #2ecc71;
+}
+
+.overview-value[data-tone='error'] {
+  color: var(--button-danger);
 }
 
 .overview-hint {
@@ -389,20 +409,47 @@ main {
 }
 
 #chart-section {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-soft);
-  border-radius: 12px;
-  padding: 16px;
   min-height: clamp(260px, 45vh, 640px);
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
   align-items: stretch;
   position: relative;
 }
 
-#temp-chart {
+.chart-panel {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chart-panel h2 {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--text-secondary);
+}
+
+.chart-panel-body {
+  flex: 1 1 auto;
+  min-height: 220px;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+#temp-chart,
+#pressure-chart {
+  display: block;
   width: 100%;
   height: 100%;
-  min-height: clamp(220px, 42vh, 560px);
+  min-height: 0;
+  max-height: 100%;
 }
 
 #stats-section,
@@ -672,6 +719,11 @@ button:active:not(:disabled) {
   color: var(--valve-closed-text);
 }
 
+.state-alert {
+  background: var(--alert-bg);
+  color: var(--alert-text);
+}
+
 .pump-status-row {
   display: flex;
   flex-wrap: wrap;
@@ -762,6 +814,15 @@ button:active:not(:disabled) {
   margin: 4px 0;
   color: var(--text-secondary);
   font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.pump-note[data-tone='success'] {
+  color: var(--valve-open-text);
+}
+
+.pump-note[data-tone='error'] {
+  color: var(--button-danger);
 }
 
 .overspeed-toggle {
@@ -809,6 +870,12 @@ button:active:not(:disabled) {
     padding-left: 0;
     border-left: none;
     margin-top: 12px;
+  }
+}
+
+@media (max-width: 1100px) {
+  #chart-section {
+    grid-template-columns: 1fr;
   }
 }
 

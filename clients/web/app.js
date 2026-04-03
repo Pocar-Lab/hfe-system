@@ -9,30 +9,25 @@
   const PUMP_MAX_CMD_PCT = 100.0;
   const PUMP_MAX_FREQ_HZ = 71.7;
   const PUMP_SAFE_MAX_HZ = 60.0;
+  const PUMP_DEFAULT_START_PCT = 5.0;
+  const PUMP_DELTA_P_ESTOP_LIMIT_BAR = 5.0;
+  const PUMP_SAFETY_LAW_KEY = 'pump_delta_p_high';
+  const PUMP_SAFETY_LAW_LABEL = 'Pump delta P high';
   const FLUID_REFERENCE = {
     name: 'HFE-7200',
     concentrationPct: 100.0,
   };
-  // The meter currently reports register 30006 in Fahrenheit; the UI renders it in Celsius.
-  const FLOW_TEMPERATURE_SOURCE_UNIT = 'fahrenheit';
+  // Fallback for older supervisor payloads; the MFC400 Modbus supplement documents 30006 in Kelvin.
+  const FLOW_TEMPERATURE_SOURCE_UNIT = 'kelvin';
   const PUMP_LOG_FIELDS = [
     { column: 'pump_cmd_pct', key: 'cmd_pct', digits: 3 },
-    { column: 'pump_cmd_hz', key: 'cmd_hz', digits: 3 },
     { column: 'pump_freq_hz', key: 'freq_hz', digits: 3 },
-    { column: 'pump_freq_pct', key: 'freq_pct', digits: 2 },
     { column: 'pump_input_power_w', key: 'input_power_w', digits: 2 },
-    { column: 'pump_input_power_pct', key: 'input_power_pct', digits: 2 },
     { column: 'pump_output_current_a', key: 'output_current_a', digits: 3 },
-    { column: 'pump_output_current_pct', key: 'output_current_pct', digits: 2 },
     { column: 'pump_output_voltage_v', key: 'output_voltage_v', digits: 2 },
-    { column: 'pump_output_voltage_pct', key: 'output_voltage_pct', digits: 2 },
-    { column: 'pump_pressure_before_bar', key: 'pressure_before_bar', digits: 3 },
-    { column: 'pump_pressure_after_bar', key: 'pressure_after_bar', digits: 3 },
-    { column: 'pump_pressure_tank_bar', key: 'pressure_tank_bar', digits: 3 },
-    { column: 'pump_pressure_after_v', key: 'pressure_after_v', digits: 3 },
-    { column: 'pump_pressure_before_psi', key: 'pressure_before_psi', digits: 2 },
-    { column: 'pump_pressure_after_psi', key: 'pressure_after_psi', digits: 2 },
-    { column: 'pump_pressure_tank_psi', key: 'pressure_tank_psi', digits: 2 },
+    { column: 'pump_pressure_before_bar_abs', key: 'pressure_before_bar_abs', digits: 3 },
+    { column: 'pump_pressure_after_bar_abs', key: 'pressure_after_bar_abs', digits: 3 },
+    { column: 'pump_pressure_tank_bar_abs', key: 'pressure_tank_bar_abs', digits: 3 },
     { column: 'pump_pressure_error_bar', key: 'pressure_error_bar', digits: 3 },
     { column: 'pump_max_freq_hz', key: 'max_freq_hz', digits: 3 },
   ];
@@ -42,7 +37,6 @@
     { column: 'fluid_flow_velocity_mps', key: 'flow_velocity_mps', digits: 6 },
     { column: 'fluid_volume_flow_m3s', key: 'volume_flow_m3s', digits: 9 },
     { column: 'fluid_mass_flow_kgs', key: 'mass_flow_kgs', digits: 9 },
-    { column: 'fluid_temperature_raw', key: 'temperature_raw', digits: 6 },
     { column: 'fluid_temperature_c', key: 'temperature_c', digits: 3 },
     { column: 'fluid_density_kg_m3', key: 'density_kg_m3', digits: 6 },
     { column: 'fluid_delta_p_bar', key: 'delta_p_bar', digits: 3 },
@@ -81,7 +75,10 @@
   const pumpCmdInput = document.getElementById('pump-command-input');
   const pumpCmdSlider = document.getElementById('pump-command-slider');
   const pumpOverspeedToggle = document.getElementById('pump-overspeed-toggle');
+  const globalPumpStopButton = document.getElementById('global-pump-stop-button');
   const pumpStopButton = document.getElementById('pump-stop-button');
+  const pumpSafetyStatusEl = document.getElementById('pump-safety-status');
+  const pumpSpeedSubmitButton = pumpCmdForm ? pumpCmdForm.querySelector('button[type="submit"]') : null;
   const pumpRunStateEl = document.getElementById('pump-run-state');
   const pumpCmdHzEl = document.getElementById('pump-cmd-hz');
   const pumpCmdRpmEl = document.getElementById('pump-cmd-rpm');
@@ -106,14 +103,14 @@
   const overviewConnectionEl = document.getElementById('overview-connection');
   const overviewValveEl = document.getElementById('overview-valve');
   const overviewAvgTempEl = document.getElementById('overview-avg-temp');
-  const overviewTankPressureEl = document.getElementById('overview-tank-pressure');
-  const overviewTankPressureSubEl = document.getElementById('overview-tank-pressure-sub');
+  const overviewPumpDeltaPEl = document.getElementById('overview-pump-delta-p');
+  const overviewPumpDeltaPSubEl = document.getElementById('overview-pump-delta-p-sub');
   const sensorValuesEl = document.getElementById('sensor-values');
   const loggingToggleBtn = document.getElementById('logging-toggle');
   const fluidNameEl = document.getElementById('fluid-name');
   const fluidConcentrationEl = document.getElementById('fluid-concentration');
-  const fluidPressureDropEl = document.getElementById('fluid-pressure-drop');
-  const fluidPressureDropSubEl = document.getElementById('fluid-pressure-drop-sub');
+  const fluidTankPressureEl = document.getElementById('fluid-tank-pressure');
+  const fluidTankPressureSubEl = document.getElementById('fluid-tank-pressure-sub');
   const fluidFlowVelocityEl = document.getElementById('fluid-flow-velocity');
   const fluidVolumeFlowEl = document.getElementById('fluid-volume-flow');
   const fluidMassFlowEl = document.getElementById('fluid-mass-flow');
@@ -128,6 +125,9 @@
   const telemetryInput = document.getElementById('telemetry-input');
   const sensorCheckboxesEl = document.getElementById('sensor-checkboxes');
   const chartSectionEl = document.getElementById('chart-section');
+  const chartPanelEls = Array.from(chartSectionEl ? chartSectionEl.querySelectorAll('.chart-panel') : []);
+  const tempChartCanvas = document.getElementById('temp-chart');
+  const pressureChartCanvas = document.getElementById('pressure-chart');
   const statsSectionEl = document.getElementById('stats-section');
   const controlsSectionEl = document.getElementById('controls-section');
   const headerEl = document.querySelector('header');
@@ -173,7 +173,8 @@
     });
   });
 
-  const ctx = document.getElementById('temp-chart').getContext('2d');
+  const tempCtx = tempChartCanvas ? tempChartCanvas.getContext('2d') : null;
+  const pressureCtx = pressureChartCanvas ? pressureChartCanvas.getContext('2d') : null;
   const customCss = getComputedStyle(document.documentElement);
   const legendLabelColor = customCss.getPropertyValue('--chart-text').trim() || '#888';
   const gridColor = customCss.getPropertyValue('--chart-grid').trim() || 'rgba(0,0,0,0.1)';
@@ -191,17 +192,30 @@
     '#ff6f59',
     '#ff9f1c',
   ];
+  const PRESSURE_COLORS = ['#2d82ff', '#f7b731', '#2ecc71'];
 
-  const sensorDatasets = Array.from({ length: MAX_SENSORS }, (_, idx) => ({
-    label: `U${idx}`,
-    borderColor: SENSOR_COLORS[idx % SENSOR_COLORS.length],
-    backgroundColor: 'rgba(0,0,0,0)',
-    borderWidth: 2,
-    pointRadius: 0,
-    tension: 0.1,
-    spanGaps: true,
-    data: [],
-  }));
+  function createLineDataset(label, color, extra = {}) {
+    return {
+      label,
+      borderColor: color,
+      backgroundColor: 'rgba(0,0,0,0)',
+      borderWidth: 2,
+      pointRadius: 0,
+      tension: 0.1,
+      spanGaps: true,
+      data: [],
+      ...extra,
+    };
+  }
+
+  const sensorDatasets = Array.from({ length: MAX_SENSORS }, (_, idx) =>
+    createLineDataset(`U${idx}`, SENSOR_COLORS[idx % SENSOR_COLORS.length]),
+  );
+  const pressureDatasets = [
+    createLineDataset('Before Pump', PRESSURE_COLORS[0]),
+    createLineDataset('After Pump', PRESSURE_COLORS[1]),
+    createLineDataset('Tank', PRESSURE_COLORS[2]),
+  ];
 
   function sentenceCase(text) {
     const value = text === undefined || text === null ? '' : String(text);
@@ -216,8 +230,10 @@
   let currentHysteresis = 0.5;
   let pumpMaxFreqHz = PUMP_MAX_FREQ_HZ;
   let lastPumpCmdPct = 0;
+  let pumpRunning = false;
   let userPumpDirty = false;
   let overspeedEnabled = false;
+  let pumpSafetyState = buildPumpSafetyModel(null, null);
 
   function setpointLabel() {
     return `Set-point (${currentSetpoint.toFixed(1)} °C)`;
@@ -233,6 +249,41 @@
     return formatted === '—' ? formatted : `${formatted} °C`;
   }
 
+  function formatPressureValue(value, digits = 3) {
+    const num = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(num) ? `${num.toFixed(digits)} bar` : '—';
+  }
+
+  function setTone(el, tone = '') {
+    if (!el) {
+      return;
+    }
+    if (tone) {
+      el.dataset.tone = tone;
+    } else {
+      delete el.dataset.tone;
+    }
+  }
+
+  function createTimeScale() {
+    return {
+      type: 'linear',
+      title: { display: true, text: 'Time (min)' },
+      min: 0,
+      max: WINDOW_MINUTES,
+      ticks: { color: tickColor },
+      grid: { color: gridColor },
+    };
+  }
+
+  function createLegendOptions() {
+    return {
+      labels: {
+        color: legendLabelColor,
+      },
+    };
+  }
+
   const setpointDataset = {
     label: setpointLabel(),
     borderColor: '#adb5bd',
@@ -244,65 +295,112 @@
     data: [],
   };
 
-  const chart = new Chart(ctx, {
-    type: 'line',
-    data: {
-      datasets: [...sensorDatasets, setpointDataset],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      parsing: false,
-      animation: false,
-      interaction: {
-        intersect: false,
-        mode: 'nearest',
-      },
-      scales: {
-        x: {
-          type: 'linear',
-          title: { display: true, text: 'Time (min)' },
-          min: 0,
-          max: WINDOW_MINUTES,
-          ticks: { color: tickColor },
-          grid: { color: gridColor },
+  const chart = tempCtx
+    ? new Chart(tempCtx, {
+        type: 'line',
+        data: {
+          datasets: [...sensorDatasets, setpointDataset],
         },
-        y: {
-          title: { display: true, text: 'Temperature (°C)' },
-          suggestedMin: -170,
-          suggestedMax: 25,
-          ticks: {
-            color: tickColor,
-            callback(value) {
-              return formatThermocoupleValue(value);
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          parsing: false,
+          animation: false,
+          interaction: {
+            intersect: false,
+            mode: 'nearest',
+          },
+          scales: {
+            x: createTimeScale(),
+            y: {
+              title: { display: true, text: 'Temperature (°C)' },
+              suggestedMin: -170,
+              suggestedMax: 25,
+              ticks: {
+                color: tickColor,
+                callback(value) {
+                  return formatThermocoupleValue(value);
+                },
+              },
+              grid: { color: gridColor },
             },
           },
-          grid: { color: gridColor },
-        },
-      },
-      plugins: {
-        legend: {
-          labels: {
-            color: legendLabelColor,
-          },
-        },
-        tooltip: {
-          callbacks: {
-            label(context) {
-              const datasetLabel = context.dataset && context.dataset.label ? `${context.dataset.label}: ` : '';
-              const yValue = context.parsed && typeof context.parsed.y === 'number'
-                ? context.parsed.y
-                : Number.NaN;
-              if (context.dataset === setpointDataset) {
-                return Number.isFinite(yValue) ? `${datasetLabel}${yValue.toFixed(1)} °C` : `${datasetLabel}—`;
-              }
-              return `${datasetLabel}${formatThermocoupleTemperature(yValue)}`;
+          plugins: {
+            legend: createLegendOptions(),
+            tooltip: {
+              callbacks: {
+                label(context) {
+                  const datasetLabel =
+                    context.dataset && context.dataset.label ? `${context.dataset.label}: ` : '';
+                  const yValue =
+                    context.parsed && typeof context.parsed.y === 'number'
+                      ? context.parsed.y
+                      : Number.NaN;
+                  if (context.dataset === setpointDataset) {
+                    return Number.isFinite(yValue)
+                      ? `${datasetLabel}${yValue.toFixed(1)} °C`
+                      : `${datasetLabel}—`;
+                  }
+                  return `${datasetLabel}${formatThermocoupleTemperature(yValue)}`;
+                },
+              },
             },
           },
         },
-      },
-    },
-  });
+      })
+    : null;
+
+  const pressureChart = pressureCtx
+    ? new Chart(pressureCtx, {
+        type: 'line',
+        data: {
+          datasets: pressureDatasets,
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          parsing: false,
+          animation: false,
+          interaction: {
+            intersect: false,
+            mode: 'nearest',
+          },
+          scales: {
+            x: createTimeScale(),
+            y: {
+              title: { display: true, text: 'Pressure (bar abs)' },
+              min: 1,
+              max: 10,
+              ticks: {
+                color: tickColor,
+                stepSize: 1,
+                callback(value) {
+                  const num = typeof value === 'number' ? value : Number(value);
+                  return Number.isFinite(num) ? num.toFixed(2) : '—';
+                },
+              },
+              grid: { color: gridColor },
+            },
+          },
+          plugins: {
+            legend: createLegendOptions(),
+            tooltip: {
+              callbacks: {
+                label(context) {
+                  const datasetLabel =
+                    context.dataset && context.dataset.label ? `${context.dataset.label}: ` : '';
+                  const yValue =
+                    context.parsed && typeof context.parsed.y === 'number'
+                      ? context.parsed.y
+                      : Number.NaN;
+                  return `${datasetLabel}${formatPressureValue(yValue)}`;
+                },
+              },
+            },
+          },
+        },
+      })
+    : null;
 
   const MIN_CHART_CONTENT_HEIGHT = 300;
   const MAX_CHART_CONTENT_HEIGHT = 900;
@@ -368,18 +466,24 @@
       return;
     }
     const target = Math.max(MIN_CHART_CONTENT_HEIGHT, Math.min(available, MAX_CHART_CONTENT_HEIGHT));
-    const contentHeight = Math.round(target);
+    const rowCount = window.matchMedia('(max-width: 1100px)').matches
+      ? Math.max(chartPanelEls.length, 1)
+      : 1;
+    const sectionStyle = window.getComputedStyle(chartSectionEl);
+    const sectionGap = parseFloat(sectionStyle.rowGap || sectionStyle.gap || 0);
+    const sectionHeight = Math.round(target * rowCount + sectionGap * Math.max(rowCount - 1, 0));
     const currentHeight = parseFloat(chartSectionEl.style.height || 0);
-    if (Number.isFinite(currentHeight) && Math.abs(currentHeight - contentHeight) < 1) {
+    if (Number.isFinite(currentHeight) && Math.abs(currentHeight - sectionHeight) < 1) {
       return;
     }
-    chartSectionEl.style.height = `${contentHeight}px`;
-    chartSectionEl.style.minHeight = `${contentHeight}px`;
-    if (chart && chart.canvas) {
-      chart.canvas.style.height = '100%';
-      chart.canvas.style.minHeight = `${Math.max(180, contentHeight - 32)}px`;
+    chartSectionEl.style.height = `${sectionHeight}px`;
+    chartSectionEl.style.minHeight = `${sectionHeight}px`;
+    if (chart) {
+      chart.resize();
     }
-    chart.resize();
+    if (pressureChart) {
+      pressureChart.resize();
+    }
   }
 
   function scheduleChartHeightUpdate() {
@@ -411,6 +515,7 @@
   let startEpochSec = null;
   const sensorSeries = Array.from({ length: MAX_SENSORS }, () => []);
   const setpointSeries = [];
+  const pressureSeries = pressureDatasets.map(() => []);
 
   let sensorSelections = Array(MAX_SENSORS).fill(true);
   let renderedCheckboxCount = 0;
@@ -725,9 +830,13 @@
         ? fluid.concentration_pct
         : FLUID_REFERENCE.concentrationPct;
     const temperatureRaw = fluid ? finiteNumber(fluid.temperature_raw) : NaN;
-    const temperature = convertFlowTemperature(temperatureRaw);
+    const temperatureDirectC = fluid ? finiteNumber(fluid.temperature_c) : NaN;
+    const temperature = Number.isFinite(temperatureDirectC)
+      ? { celsius: temperatureDirectC, main: `${temperatureDirectC.toFixed(2)} °C` }
+      : convertFlowTemperature(temperatureRaw);
     const beforeBar = pump ? finiteNumber(pump.pressure_before_bar_abs) : NaN;
     const afterBar = pump ? finiteNumber(pump.pressure_after_bar_abs) : NaN;
+    const tankPressureBar = pump ? finiteNumber(pump.pressure_tank_bar_abs) : NaN;
     const deltaPBar =
       Number.isFinite(beforeBar) && Number.isFinite(afterBar) ? afterBar - beforeBar : NaN;
 
@@ -745,6 +854,45 @@
       temperature_c: temperature.celsius,
       density_kg_m3: fluid ? finiteNumber(fluid.density_kg_m3) : NaN,
       delta_p_bar: deltaPBar,
+      tank_pressure_bar_abs: tankPressureBar,
+    };
+  }
+
+  function buildPumpSafetyModel(safetyData, pumpData) {
+    const safety = safetyData && typeof safetyData === 'object' ? safetyData : null;
+    const laws = safety && safety.laws && typeof safety.laws === 'object' ? safety.laws : null;
+    const rawLaw =
+      laws && laws[PUMP_SAFETY_LAW_KEY] && typeof laws[PUMP_SAFETY_LAW_KEY] === 'object'
+        ? laws[PUMP_SAFETY_LAW_KEY]
+        : null;
+    const pump = pumpData && typeof pumpData === 'object' ? pumpData : null;
+    const beforeBar = pump ? finiteNumber(pump.pressure_before_bar_abs) : NaN;
+    const afterBar = pump ? finiteNumber(pump.pressure_after_bar_abs) : NaN;
+    const deltaPBar =
+      Number.isFinite(beforeBar) && Number.isFinite(afterBar) ? afterBar - beforeBar : NaN;
+    const lawLimitBar = rawLaw ? finiteNumber(rawLaw.limit_bar) : NaN;
+    const lawValueBar = rawLaw ? finiteNumber(rawLaw.value_bar) : NaN;
+
+    return {
+      available: Boolean(safety),
+      emergencyStop: safety ? coerceOnOff(safety.emergency_stop) === true : false,
+      resetRequired: safety ? coerceOnOff(safety.reset_required) === true : false,
+      activeReason:
+        safety && typeof safety.active_reason === 'string' ? safety.active_reason.trim() : '',
+      message:
+        safety && typeof safety.message === 'string' && safety.message.trim()
+          ? safety.message.trim()
+          : '',
+      lawKey: PUMP_SAFETY_LAW_KEY,
+      lawLabel:
+        rawLaw && typeof rawLaw.label === 'string' && rawLaw.label.trim()
+          ? rawLaw.label.trim()
+          : PUMP_SAFETY_LAW_LABEL,
+      lawActive: rawLaw ? coerceOnOff(rawLaw.active) === true : false,
+      lawTripped: rawLaw ? coerceOnOff(rawLaw.tripped) === true : false,
+      limitBar: Number.isFinite(lawLimitBar) ? lawLimitBar : PUMP_DELTA_P_ESTOP_LIMIT_BAR,
+      valueBar: Number.isFinite(lawValueBar) ? lawValueBar : deltaPBar,
+      deltaPBar,
     };
   }
 
@@ -781,19 +929,157 @@
     }
   }
 
-  function syncPumpInputs(pct, { force = false } = {}) {
+  function formatPumpPctText(pct) {
+    return clampPumpPct(pct).toFixed(2);
+  }
+
+  function parsePumpPctInput(value) {
+    if (value === null || value === undefined) {
+      return NaN;
+    }
+    const trimmed = String(value).trim();
+    if (!trimmed) {
+      return NaN;
+    }
+    return Number.parseFloat(trimmed);
+  }
+
+  function syncPumpInputs(pct, { force = false, preserveTypedInput = false } = {}) {
     const clamped = clampPumpPct(pct);
     lastPumpCmdPct = clamped;
-    const asText = clamped.toFixed(2);
-    if (!userPumpDirty || force) {
-      if (pumpCmdInput) {
+    const asText = formatPumpPctText(clamped);
+    if (pumpCmdInput) {
+      pumpCmdInput.max = currentMaxPumpPct().toFixed(1);
+      const shouldWriteInput = (!userPumpDirty || force) && !(preserveTypedInput && document.activeElement === pumpCmdInput);
+      if (shouldWriteInput) {
         pumpCmdInput.value = asText;
-        pumpCmdInput.max = currentMaxPumpPct().toFixed(1);
       }
-      if (pumpCmdSlider) {
-        pumpCmdSlider.value = asText;
-        pumpCmdSlider.max = currentMaxPumpPct().toFixed(1);
+    }
+    if (pumpCmdSlider) {
+      pumpCmdSlider.max = currentMaxPumpPct().toFixed(1);
+      pumpCmdSlider.value = asText;
+    }
+  }
+
+  function normalizePumpTextInput({ fallbackPct = lastPumpCmdPct } = {}) {
+    if (!pumpCmdInput) {
+      return clampPumpPct(fallbackPct);
+    }
+    const parsed = parsePumpPctInput(pumpCmdInput.value);
+    const normalized = Number.isFinite(parsed) ? clampPumpPct(parsed) : clampPumpPct(fallbackPct);
+    syncPumpInputs(normalized, { force: true });
+    return normalized;
+  }
+
+  function updatePumpActionButton(buttonEl, running) {
+    if (!buttonEl) {
+      return;
+    }
+    if (pumpSafetyState.resetRequired) {
+      buttonEl.textContent = 'Reset Emergency Stop';
+      buttonEl.classList.add('danger');
+      buttonEl.classList.remove('primary');
+      buttonEl.setAttribute('aria-label', 'Reset emergency stop');
+      buttonEl.title = 'Reset emergency stop once the safety condition is cleared';
+      return;
+    }
+    const startLabel = `Start Pump (${PUMP_DEFAULT_START_PCT.toFixed(0)}%)`;
+    buttonEl.textContent = running ? 'Stop Pump' : startLabel;
+    buttonEl.classList.toggle('danger', running);
+    buttonEl.classList.toggle('primary', !running);
+    buttonEl.setAttribute(
+      'aria-label',
+      running ? 'Stop pump' : `Start pump at ${PUMP_DEFAULT_START_PCT.toFixed(0)} percent`,
+    );
+    buttonEl.title = running
+      ? 'Stop pump'
+      : `Start pump at ${PUMP_DEFAULT_START_PCT.toFixed(0)}% command`;
+  }
+
+  function updatePumpActionButtons() {
+    updatePumpActionButton(globalPumpStopButton, pumpRunning);
+    updatePumpActionButton(pumpStopButton, pumpRunning);
+  }
+
+  function updatePumpCommandAvailability() {
+    const locked = pumpSafetyState.resetRequired;
+    [pumpCmdInput, pumpCmdSlider, pumpOverspeedToggle, pumpSpeedSubmitButton].forEach((el) => {
+      if (el) {
+        el.disabled = locked;
       }
+    });
+  }
+
+  function updatePumpSafetyStatus() {
+    const limitText = `${pumpSafetyState.limitBar.toFixed(3)} bar`;
+    const valueText = formatPressureValue(pumpSafetyState.valueBar);
+    if (pumpSafetyStatusEl) {
+      if (pumpSafetyState.resetRequired) {
+        pumpSafetyStatusEl.textContent = `Emergency stop latched. ${pumpSafetyState.lawLabel} measured ${valueText} against a ${limitText} limit. Press Reset Emergency Stop once the condition is clear.`;
+        setTone(pumpSafetyStatusEl, 'error');
+      } else if (pumpSafetyState.available) {
+        pumpSafetyStatusEl.textContent = `Safety interlocks clear. Pump delta-P trip limit: ${limitText}.`;
+        setTone(pumpSafetyStatusEl, 'success');
+      } else {
+        pumpSafetyStatusEl.textContent = `Pump safety telemetry unavailable. Configured delta-P trip limit: ${limitText}.`;
+        setTone(pumpSafetyStatusEl);
+      }
+    }
+    if (overviewPumpDeltaPSubEl) {
+      if (pumpSafetyState.resetRequired) {
+        overviewPumpDeltaPSubEl.textContent = 'Emergency stop latched';
+        setTone(overviewPumpDeltaPSubEl, 'error');
+      } else {
+        overviewPumpDeltaPSubEl.textContent = 'After pump - before pump';
+        setTone(overviewPumpDeltaPSubEl);
+      }
+    }
+    if (overviewPumpSpeedSubEl) {
+      overviewPumpSpeedSubEl.textContent = pumpSafetyState.resetRequired
+        ? 'Emergency stop latched'
+        : '';
+      setTone(overviewPumpSpeedSubEl, pumpSafetyState.resetRequired ? 'error' : '');
+    }
+    if (overviewPumpSpeedEl) {
+      setTone(overviewPumpSpeedEl, pumpSafetyState.resetRequired ? 'error' : '');
+    }
+    updatePumpCommandAvailability();
+  }
+
+  function issuePumpStart(defaultPct = PUMP_DEFAULT_START_PCT) {
+    if (pumpSafetyState.resetRequired) {
+      setCommandStatus('Emergency stop latched. Reset it before restarting the pump.', 'error');
+      return;
+    }
+    const targetPct = clampPumpPct(defaultPct);
+    userPumpDirty = false;
+    pumpRunning = targetPct > 0;
+    syncPumpInputs(targetPct, { force: true });
+    updatePumpActionButtons();
+    sendCommand(`PUMP ${targetPct.toFixed(2)}`);
+    setCommandStatus(`Pump start issued (${targetPct.toFixed(2)}%)`, 'info');
+  }
+
+  function issuePumpStop() {
+    userPumpDirty = false;
+    pumpRunning = false;
+    syncPumpInputs(0, { force: true });
+    updatePumpActionButtons();
+    sendCommand('PUMP 0');
+    setCommandStatus('Pump stop issued (0%)', 'info');
+  }
+
+  async function issueEmergencyStopReset() {
+    try {
+      setCommandStatus('Resetting emergency stop…', 'info');
+      await apiJson('/api/command', {
+        method: 'POST',
+        body: JSON.stringify({ cmd: 'ESTOP RESET' }),
+      });
+      setCommandStatus('Emergency-stop reset requested', 'info');
+    } catch (err) {
+      console.error('Emergency-stop reset failed', err);
+      setCommandStatus(`Emergency-stop reset failed: ${err.message}`, 'error');
     }
   }
 
@@ -935,15 +1221,27 @@
     }
     shiftSeriesLeft(setpointSeries, deltaMinutes);
     setpointDataset.data = setpointSeries;
+    for (let i = 0; i < pressureSeries.length; i += 1) {
+      shiftSeriesLeft(pressureSeries[i], deltaMinutes);
+      pressureDatasets[i].data = pressureSeries[i];
+    }
   }
 
   function updateChartRanges() {
-    chart.options.scales.x.min = 0;
-    chart.options.scales.x.max = WINDOW_MINUTES;
+    if (chart) {
+      chart.options.scales.x.min = 0;
+      chart.options.scales.x.max = WINDOW_MINUTES;
+    }
+    if (pressureChart) {
+      pressureChart.options.scales.x.min = 0;
+      pressureChart.options.scales.x.max = WINDOW_MINUTES;
+    }
   }
 
-  function updatePumpTelemetry(pumpData) {
+  function updatePumpTelemetry(pumpData, safetyData = pumpSafetyState) {
     const pump = pumpData && typeof pumpData === 'object' ? pumpData : null;
+    const safetyState =
+      safetyData && typeof safetyData === 'object' ? safetyData : buildPumpSafetyModel(null, pump);
     if (pump && Number.isFinite(pump.max_freq_hz) && pump.max_freq_hz > 0) {
       pumpMaxFreqHz = pump.max_freq_hz;
     }
@@ -951,7 +1249,10 @@
     const cmdPct = pump && Number.isFinite(pump.cmd_pct) ? clampPumpPct(pump.cmd_pct) : lastPumpCmdPct;
     const cmdHz =
       pump && Number.isFinite(pump.cmd_hz) ? pump.cmd_hz : pumpHzFromPct(cmdPct, pumpMaxFreqHz);
-    if (!userPumpDirty) {
+    if (safetyState.resetRequired) {
+      userPumpDirty = false;
+      syncPumpInputs(cmdPct, { force: true });
+    } else if (!userPumpDirty) {
       syncPumpInputs(cmdPct, { force: false });
     }
 
@@ -979,16 +1280,26 @@
         ? `${overviewHz.toFixed(2)} Hz`
         : '—';
     }
-    if (overviewPumpSpeedSubEl) {
-      overviewPumpSpeedSubEl.textContent = '';
-    }
-
-    const running = Number.isFinite(freqHz) ? freqHz > 0.2 : cmdPct > 0.2;
+    const running = safetyState.resetRequired
+      ? false
+      : Number.isFinite(freqHz)
+      ? freqHz > 0.2
+      : cmdPct > 0.2;
+    pumpRunning = running;
     if (pumpRunStateEl) {
-      pumpRunStateEl.textContent = running ? 'Running' : 'Stopped';
-      pumpRunStateEl.classList.toggle('valve-open', running);
-      pumpRunStateEl.classList.toggle('valve-closed', !running);
+      if (safetyState.resetRequired) {
+        pumpRunStateEl.textContent = 'Emergency stop';
+        pumpRunStateEl.classList.remove('valve-open', 'valve-closed');
+        pumpRunStateEl.classList.add('state-alert');
+      } else {
+        pumpRunStateEl.textContent = running ? 'Running' : 'Stopped';
+        pumpRunStateEl.classList.toggle('valve-open', running);
+        pumpRunStateEl.classList.toggle('valve-closed', !running);
+        pumpRunStateEl.classList.remove('state-alert');
+      }
     }
+    updatePumpSafetyStatus();
+    updatePumpActionButtons();
     if (pumpCmdHzEl) {
       pumpCmdHzEl.textContent = Number.isFinite(cmdHz) ? `${cmdHz.toFixed(2)} Hz` : '—';
     }
@@ -1023,10 +1334,8 @@
       pump && Number.isFinite(pump.pressure_before_bar_abs) ? pump.pressure_before_bar_abs : null;
     const afterBar =
       pump && Number.isFinite(pump.pressure_after_bar_abs) ? pump.pressure_after_bar_abs : null;
-    const tankBar =
-      pump && Number.isFinite(pump.pressure_tank_bar_abs) ? pump.pressure_tank_bar_abs : null;
-    const afterVolts =
-      pump && Number.isFinite(pump.pressure_after_v) ? pump.pressure_after_v : null;
+    const deltaPBar =
+      Number.isFinite(beforeBar) && Number.isFinite(afterBar) ? afterBar - beforeBar : null;
 
     if (pumpPressureBeforeEl) {
       pumpPressureBeforeEl.textContent = Number.isFinite(beforeBar) ? beforeBar.toFixed(2) : '—';
@@ -1035,23 +1344,25 @@
       const value = Number.isFinite(afterBar) ? afterBar : null;
       pumpPressureAfterEl.textContent = Number.isFinite(value) ? value.toFixed(2) : '—';
     }
-    if (overviewTankPressureEl) {
-      overviewTankPressureEl.textContent = Number.isFinite(tankBar) ? tankBar.toFixed(2) : '—';
+    if (overviewPumpDeltaPEl) {
+      overviewPumpDeltaPEl.textContent = Number.isFinite(deltaPBar) ? `${deltaPBar.toFixed(3)} bar` : '—';
     }
-    if (overviewTankPressureSubEl) {
-      overviewTankPressureSubEl.textContent = pressureUnitText;
+    if (fluidTankPressureSubEl) {
+      fluidTankPressureSubEl.textContent = pressureUnitText;
     }
   }
 
   function updateFluidTelemetry(fluidData, pumpData) {
     const fluidModel = buildFluidTelemetryModel(fluidData, pumpData);
-    const temperature = convertFlowTemperature(fluidModel.temperature_raw);
+    const pump = pumpData && typeof pumpData === 'object' ? pumpData : null;
     const volumeFlowLMin = Number.isFinite(fluidModel.volume_flow_m3s)
       ? fluidModel.volume_flow_m3s * 60000
       : NaN;
     const massFlowKgMin = Number.isFinite(fluidModel.mass_flow_kgs)
       ? fluidModel.mass_flow_kgs * 60
       : NaN;
+    const pressureError =
+      pump && Number.isFinite(pump.pressure_error_bar) ? pump.pressure_error_bar : 0.05;
 
     if (fluidNameEl) {
       fluidNameEl.textContent = fluidModel.name;
@@ -1060,11 +1371,11 @@
       const digits = Number.isInteger(fluidModel.concentration_pct) ? 0 : 1;
       fluidConcentrationEl.textContent = `${fluidModel.concentration_pct.toFixed(digits)}% composition`;
     }
-    if (fluidPressureDropEl) {
-      fluidPressureDropEl.textContent = formatNumber(fluidModel.delta_p_bar, 3, ' bar');
+    if (fluidTankPressureEl) {
+      fluidTankPressureEl.textContent = formatNumber(fluidModel.tank_pressure_bar_abs, 3, ' bar');
     }
-    if (fluidPressureDropSubEl) {
-      fluidPressureDropSubEl.textContent = 'After pump - before pump';
+    if (fluidTankPressureSubEl) {
+      fluidTankPressureSubEl.textContent = `(±${pressureError.toFixed(2)} bar)`;
     }
 
     if (fluidFlowVelocityEl) {
@@ -1080,7 +1391,7 @@
     }
 
     if (fluidTemperatureEl) {
-      fluidTemperatureEl.textContent = temperature.main;
+      fluidTemperatureEl.textContent = formatNumber(fluidModel.temperature_c, 2, ' °C');
     }
 
     if (fluidDensityEl) {
@@ -1092,8 +1403,8 @@
         latestSnapshot && Number.isFinite(latestSnapshot.avgSelected)
           ? latestSnapshot.avgSelected
           : NaN;
-      if (Number.isFinite(avgSelected) && Number.isFinite(temperature.celsius)) {
-        const proxyDelta = avgSelected - temperature.celsius;
+      if (Number.isFinite(avgSelected) && Number.isFinite(fluidModel.temperature_c)) {
+        const proxyDelta = avgSelected - fluidModel.temperature_c;
         fluidTempRiseEl.textContent = `${proxyDelta.toFixed(2)} °C`;
       } else {
         fluidTempRiseEl.textContent = 'Awaiting inlet/outlet mapping';
@@ -1148,7 +1459,19 @@
     }
 
     const pump = data && typeof data.pump === 'object' ? data.pump : null;
+    const safety = data && typeof data.safety === 'object' ? data.safety : null;
     const fluid = data && typeof data.fluid === 'object' ? data.fluid : null;
+    const pressureValues = [
+      pump && Number.isFinite(pump.pressure_before_bar_abs) ? pump.pressure_before_bar_abs : null,
+      pump && Number.isFinite(pump.pressure_after_bar_abs) ? pump.pressure_after_bar_abs : null,
+      pump && Number.isFinite(pump.pressure_tank_bar_abs) ? pump.pressure_tank_bar_abs : null,
+    ];
+
+    for (let i = 0; i < pressureSeries.length; i += 1) {
+      const value = pressureValues[i];
+      pushSeries(pressureSeries[i], value === null ? { x: tMin, y: null } : { x: tMin, y: value });
+      pressureDatasets[i].data = pressureSeries[i];
+    }
 
     const valve = Number.isFinite(data.valve) ? Number(data.valve) : 0;
 
@@ -1188,6 +1511,8 @@
     renderHeaterState(heaterExhaustStateEl, exhaustOn);
 
     const fluidLog = buildFluidTelemetryModel(fluid, pump);
+    const previousEmergencyStop = pumpSafetyState.resetRequired;
+    pumpSafetyState = buildPumpSafetyModel(safety, pump);
 
     latestSnapshot = {
       temps: temps.slice(0, MAX_SENSORS),
@@ -1195,12 +1520,19 @@
       valve,
       modeChar,
       pump,
+      safety,
       fluid,
     };
-    updatePumpTelemetry(pump);
+    updatePumpTelemetry(pump, pumpSafetyState);
     updateSensorStats();
     updateFluidTelemetry(fluid, pump);
     maybeRunAutoValve(valveOpen);
+
+    if (!previousEmergencyStop && pumpSafetyState.resetRequired) {
+      setCommandStatus(pumpSafetyState.message || 'Emergency stop triggered', 'error');
+    } else if (previousEmergencyStop && !pumpSafetyState.resetRequired) {
+      setCommandStatus('Emergency stop cleared', 'success');
+    }
 
     if (serverLogInfo.active) {
       const currentRows = typeof serverLogInfo.rows === 'number' ? serverLogInfo.rows : 0;
@@ -1223,7 +1555,12 @@
     updateLoggingStatusLabel();
 
     updateChartRanges();
-    chart.update('none');
+    if (chart) {
+      chart.update('none');
+    }
+    if (pressureChart) {
+      pressureChart.update('none');
+    }
   }
 
   async function sendCommand(cmd, options = {}) {
@@ -1417,13 +1754,27 @@
     });
   });
 
-  function pumpInputChanged(event) {
-    const next = parseFloat(event?.target?.value || '0');
+  function pumpSliderChanged(event) {
+    const next = parsePumpPctInput(event?.target?.value);
     if (!Number.isFinite(next)) {
       return;
     }
     userPumpDirty = true;
     syncPumpInputs(next, { force: true });
+  }
+
+  function pumpTextInputChanged(event) {
+    userPumpDirty = true;
+    const next = parsePumpPctInput(event?.target?.value);
+    if (!Number.isFinite(next)) {
+      return;
+    }
+    syncPumpInputs(next, { force: true, preserveTypedInput: true });
+  }
+
+  function pumpTextInputBlurred() {
+    userPumpDirty = true;
+    normalizePumpTextInput();
   }
 
   if (pumpOverspeedToggle) {
@@ -1432,31 +1783,48 @@
     });
   }
 
+  async function handlePumpActionButton() {
+    if (pumpSafetyState.resetRequired) {
+      await issueEmergencyStopReset();
+      return;
+    }
+    if (pumpRunning) {
+      issuePumpStop();
+    } else {
+      issuePumpStart();
+    }
+  }
+
   if (pumpStopButton) {
     pumpStopButton.addEventListener('click', () => {
-      userPumpDirty = false;
-      syncPumpInputs(0, { force: true });
-      sendCommand('PUMP 0');
-      setCommandStatus('Pump stop issued (0%)', 'info');
+      handlePumpActionButton().catch(() => {});
     });
   }
 
-  [pumpCmdSlider, pumpCmdInput].forEach((el) => {
-    if (el) {
-      el.addEventListener('input', pumpInputChanged);
-    }
-  });
+  if (globalPumpStopButton) {
+    globalPumpStopButton.addEventListener('click', () => {
+      handlePumpActionButton().catch(() => {});
+    });
+  }
+
+  if (pumpCmdSlider) {
+    pumpCmdSlider.addEventListener('input', pumpSliderChanged);
+  }
+
+  if (pumpCmdInput) {
+    pumpCmdInput.addEventListener('input', pumpTextInputChanged);
+    pumpCmdInput.addEventListener('blur', pumpTextInputBlurred);
+    pumpCmdInput.addEventListener('change', pumpTextInputBlurred);
+  }
 
   if (pumpCmdForm) {
     pumpCmdForm.addEventListener('submit', async (event) => {
       event.preventDefault();
-      const desiredPct = clampPumpPct(
-        parseFloat(
-          (pumpCmdInput && pumpCmdInput.value) ||
-            (pumpCmdSlider && pumpCmdSlider.value) ||
-            `${lastPumpCmdPct}`,
-        ),
-      );
+      if (pumpSafetyState.resetRequired) {
+        setCommandStatus('Emergency stop latched. Reset it before setting speed.', 'error');
+        return;
+      }
+      const desiredPct = normalizePumpTextInput();
       const desiredHz = pumpHzFromPct(desiredPct);
       try {
         setCommandStatus('Setting pump speed…', 'info');
@@ -1465,7 +1833,9 @@
           body: JSON.stringify({ cmd: `PUMP ${desiredPct.toFixed(2)}` }),
         });
         userPumpDirty = false;
+        pumpRunning = desiredPct > 0;
         syncPumpInputs(desiredPct, { force: true });
+        updatePumpActionButtons();
         const hzText = Number.isFinite(desiredHz) ? desiredHz.toFixed(2) : '?';
         setCommandStatus(`Pump set to ${desiredPct.toFixed(2)} % (${hzText} Hz)`, 'success');
       } catch (err) {
@@ -1521,7 +1891,9 @@
         if (latestSnapshot) {
           updateSensorStats();
         }
-        chart.update('none');
+        if (chart) {
+          chart.update('none');
+        }
         setCommandStatus(`Setpoint set to ${payload.setpoint_C.toFixed(2)} °C`, 'success');
       } catch (err) {
         console.error('Setpoint update failed', err);
@@ -1559,6 +1931,8 @@
   }
 
   syncPumpInputs(lastPumpCmdPct, { force: true });
+  updatePumpSafetyStatus();
+  updatePumpActionButtons();
   renderSensorCheckboxes(0);
 
   updateLoggingStatusLabel();
