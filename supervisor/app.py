@@ -188,6 +188,18 @@ def parse_serial_payload(raw: bytes) -> Optional[dict]:
 DETECT_ZERO_AS_NC = True
 
 MAX_LOG_SENSORS = 10
+TEMP_LOG_COLUMNS = [
+    "U0_C",
+    "U1_C",
+    "TTEST_C",
+    "TFO_C",
+    "TTI_C",
+    "U5_C",
+    "TTO_C",
+    "TMI_C",
+    "THM_C",
+    "THI_C",
+]
 RAW_LOG_DIR = REPO / "data" / "raw"
 PUMP_LOG_FIELDS: list[tuple[str, str, str]] = [
     ("pump_cmd_pct", "cmd_pct", "{:.3f}"),
@@ -413,7 +425,7 @@ def _start_logging(state, filename: Optional[str] = None) -> dict:
     writer = csv.writer(fh)
     header = (
         ["time_s"]
-        + [f"temp{i}_C" for i in range(MAX_LOG_SENSORS)]
+        + TEMP_LOG_COLUMNS
         + ["valve", "mode"]
         + [col for col, _, _ in PUMP_LOG_FIELDS]
         + [col for col, _, _ in FLUID_LOG_FIELDS]

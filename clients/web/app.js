@@ -13,8 +13,8 @@
   const PUMP_DELTA_P_ESTOP_LIMIT_BAR = 5.0;
   const PUMP_SAFETY_LAW_KEY = 'pump_delta_p_high';
   const PUMP_SAFETY_LAW_LABEL = 'Pump delta P high';
-  const TTI_SENSOR_INDEX = 3;
-  const TTO_SENSOR_INDEX = 7;
+  const TTI_SENSOR_INDEX = 4;
+  const TTO_SENSOR_INDEX = 6;
   const FLUID_REFERENCE = {
     name: 'HFE-7200',
     concentrationPct: 100.0,
@@ -43,9 +43,10 @@
     { column: 'fluid_density_kg_m3', key: 'density_kg_m3', digits: 6 },
     { column: 'fluid_delta_p_bar', key: 'delta_p_bar', digits: 3 },
   ];
+  const TEMP_LOG_COLUMNS = ['U0_C', 'U1_C', 'TTEST_C', 'TFO_C', 'TTI_C', 'U5_C', 'TTO_C', 'TMI_C', 'THM_C', 'THI_C'];
   const LOG_HEADER = [
     'time_s',
-    ...Array.from({ length: MAX_SENSORS }, (_, idx) => `temp${idx}_C`),
+    ...TEMP_LOG_COLUMNS,
     'valve',
     'mode',
     ...PUMP_LOG_FIELDS.map((field) => field.column),
@@ -198,12 +199,12 @@
   const SENSOR_METADATA = [
     { tag: 'U0', label: 'Unassigned', connected: false },
     { tag: 'U1', label: 'Unassigned', connected: false },
-    { tag: 'U2', label: 'Unassigned', connected: false },
-    { tag: 'TTI', label: 'Tank inlet', connected: true },
+    { tag: 'TTEST', label: 'Test thermocouple', connected: true },
     { tag: 'TFO', label: 'Flow meter outlet', connected: true },
+    { tag: 'TTI', label: 'Tank inlet', connected: true },
     { tag: 'U5', label: 'Unassigned', connected: false },
-    { tag: 'TMI', label: 'Pump inlet', connected: true },
     { tag: 'TTO', label: 'Tank outlet', connected: true },
+    { tag: 'TMI', label: 'Pump inlet', connected: true },
     { tag: 'THM', label: 'HEX middle', connected: true },
     { tag: 'THI', label: 'HEX inlet', connected: true },
   ];
