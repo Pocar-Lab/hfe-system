@@ -28,8 +28,11 @@ __pycache__/
 logs/
 *.parquet
 *.csv
+!data/processed/*.csv
+!data/processed/**/*.csv
 
 # Notebook checkpoints
+# Track notebooks in git; ignore only Jupyter's transient checkpoint files.
 .ipynb_checkpoints/
 
 # OS cruft
