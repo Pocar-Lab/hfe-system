@@ -291,6 +291,41 @@ main {
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
 }
 
+.pump-spec-board {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.pump-spec-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 0 10px 14px;
+  border-left: 3px solid rgba(255, 255, 255, 0.08);
+  background: transparent;
+}
+
+.pump-spec-key {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.pump-spec-value {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.25;
+}
+
+.pump-spec-detail {
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
 .vfd-grid {
   grid-template-columns: minmax(200px, 1fr) minmax(320px, 2fr);
   align-items: stretch;
@@ -304,7 +339,7 @@ main {
 
 .vfd-output-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 16px;
   padding-left: 16px;
   border-left: 1px solid var(--border-soft);
@@ -343,6 +378,13 @@ main {
 .metric-subvalue {
   font-size: 0.95rem;
   color: var(--text-secondary);
+}
+
+.pump-vfd-note {
+  margin: 0 0 14px 0;
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+  line-height: 1.45;
 }
 
 .drive-status-grid {
@@ -660,6 +702,15 @@ main {
   font-size: 0.8rem;
   color: var(--text-secondary);
   max-width: 220px;
+}
+
+.auto-status {
+  flex: 1 1 100%;
+  margin: 4px 0 0 0;
+  font-size: 0.95rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
 }
 
 .form-row input:focus {

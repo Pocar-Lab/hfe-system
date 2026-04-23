@@ -4,7 +4,11 @@
   const MAX_SENSORS = 10;
   const MAX_POINTS = 900;
   const WINDOW_MINUTES = 15;
-  const SETPOINT = 25.0;
+  const DEFAULT_HFE_GOAL_C = -110.0;
+  const DEFAULT_HX_LIMIT_C = -120.0;
+  const DEFAULT_AUTO_HYSTERESIS_C = 0.5;
+  const DEFAULT_HX_APPROACH_C = 10.0;
+  const AUTO_TARGET_EPSILON_C = 0.005;
   const THERMOCOUPLE_DISPLAY_DIGITS = 0;
   const PUMP_MAX_CMD_PCT = 100.0;
   const PUMP_MAX_FREQ_HZ = 71.7;
@@ -13,6 +17,12 @@
   const PUMP_DELTA_P_ESTOP_LIMIT_BAR = 5.0;
   const PUMP_SAFETY_LAW_KEY = 'pump_delta_p_high';
   const PUMP_SAFETY_LAW_LABEL = 'Pump delta P high';
+  const PUMP_EST_RPM_PER_HZ = 30.0;
+  const PUMP_NAMEPLATE_CURRENT_A = 3.4;
+  const PUMP_BASE_VOLTAGE_V = 230.0;
+  const PUMP_RATED_OUTPUT_W = 746.0;
+  const PUMP_NAMEPLATE_EFFICIENCY = 0.855;
+  const PUMP_EST_RATED_INPUT_W = PUMP_RATED_OUTPUT_W / PUMP_NAMEPLATE_EFFICIENCY;
   const TTI_SENSOR_INDEX = 4;
   const TTO_SENSOR_INDEX = 6;
   const FLUID_REFERENCE = {
@@ -23,15 +33,17 @@
   const FLOW_TEMPERATURE_SOURCE_UNIT = 'kelvin';
   const PUMP_LOG_FIELDS = [
     { column: 'pump_cmd_pct', key: 'cmd_pct', digits: 3 },
-    { column: 'pump_freq_hz', key: 'freq_hz', digits: 3 },
-    { column: 'pump_input_power_w', key: 'input_power_w', digits: 2 },
-    { column: 'pump_output_current_a', key: 'output_current_a', digits: 3 },
-    { column: 'pump_output_voltage_v', key: 'output_voltage_v', digits: 2 },
+    { column: 'pump_freq_hz', key: 'freq_hz', digits: 2 },
+    { column: 'pump_rotation_speed_rpm', key: 'rotation_speed_rpm', digits: 0 },
+    { column: 'pump_input_power_kw', key: 'input_power_kw', digits: 2 },
+    { column: 'pump_input_power_w', key: 'input_power_w', digits: 0 },
+    { column: 'pump_output_current_a', key: 'output_current_a', digits: 2 },
+    { column: 'pump_output_voltage_v', key: 'output_voltage_v', digits: 1 },
     { column: 'pump_pressure_before_bar_abs', key: 'pressure_before_bar_abs', digits: 3 },
     { column: 'pump_pressure_after_bar_abs', key: 'pressure_after_bar_abs', digits: 3 },
     { column: 'pump_pressure_tank_bar_abs', key: 'pressure_tank_bar_abs', digits: 3 },
     { column: 'pump_pressure_error_bar', key: 'pressure_error_bar', digits: 3 },
-    { column: 'pump_max_freq_hz', key: 'max_freq_hz', digits: 3 },
+    { column: 'pump_max_freq_hz', key: 'max_freq_hz', digits: 1 },
   ];
   const FLUID_LOG_FIELDS = [
     { column: 'fluid_meter_valid', key: 'meter_valid', digits: 0 },
@@ -40,10 +52,10 @@
     { column: 'fluid_volume_flow_m3s', key: 'volume_flow_m3s', digits: 9 },
     { column: 'fluid_mass_flow_kgs', key: 'mass_flow_kgs', digits: 9 },
     { column: 'fluid_temperature_c', key: 'temperature_c', digits: 3 },
-    { column: 'fluid_density_kg_m3', key: 'density_kg_m3', digits: 6 },
+    { column: 'fluid_density_kg_m3', key: 'density_kg_m3', digits: 0 },
     { column: 'fluid_delta_p_bar', key: 'delta_p_bar', digits: 3 },
   ];
-  const TEMP_LOG_COLUMNS = ['U0_C', 'U1_C', 'TTEST_C', 'TFO_C', 'TTI_C', 'U5_C', 'TTO_C', 'TMI_C', 'THM_C', 'THI_C'];
+  const TEMP_LOG_COLUMNS = ['U0_C', 'U1_C', 'TTEST_C', 'TFO_C', 'TTI_C', 'U5_C', 'TTO_C', 'TMI_C', 'THI_C', 'THM_C'];
   const LOG_HEADER = [
     'time_s',
     ...TEMP_LOG_COLUMNS,
@@ -53,7 +65,7 @@
     ...FLUID_LOG_FIELDS.map((field) => field.column),
   ];
   const LOG_FIELD_DIGITS = new Map(
-    [...PUMP_LOG_FIELDS, ...FLUID_LOG_FIELDS].map((field) => [field.column, field.digits || 3]),
+    [...PUMP_LOG_FIELDS, ...FLUID_LOG_FIELDS].map((field) => [field.column, field.digits ?? 3]),
   );
 
   const params = new URLSearchParams(window.location.search);
@@ -99,6 +111,8 @@
   const vfdPowerEl = document.getElementById('vfd-power');
   const vfdPowerPctEl = document.getElementById('vfd-power-pct');
   const vfdPowerUnitEl = document.getElementById('vfd-power-unit');
+  const vfdSpeedEl = document.getElementById('vfd-speed');
+  const vfdSpeedSubEl = document.getElementById('vfd-speed-sub');
   const sensorCountEl = document.getElementById('sensor-count');
   const validCountEl = document.getElementById('valid-count');
   const validListEl = document.getElementById('valid-list');
@@ -120,8 +134,12 @@
   const fluidTempRiseEl = document.getElementById('fluid-temp-rise');
   const fluidViscosityEl = document.getElementById('fluid-viscosity');
   const fluidMixingEfficiencyEl = document.getElementById('fluid-mixing-efficiency');
-  const setpointForm = document.getElementById('setpoint-form');
-  const setpointInput = document.getElementById('setpoint-input');
+  const autoControlForm = document.getElementById('auto-control-form');
+  const hfeGoalInput = document.getElementById('hfe-goal-input');
+  const hxLimitInput = document.getElementById('hx-limit-input');
+  const autoHysteresisInput = document.getElementById('auto-hysteresis-input');
+  const hxApproachInput = document.getElementById('hx-approach-input');
+  const autoModeStatusEl = document.getElementById('auto-mode-status');
   const chartSectionEl = document.getElementById('chart-section');
   const chartPanelEls = Array.from(chartSectionEl ? chartSectionEl.querySelectorAll('.chart-panel') : []);
   const tempChartCanvas = document.getElementById('temp-chart');
@@ -173,6 +191,7 @@
 
   const tempCtx = tempChartCanvas ? tempChartCanvas.getContext('2d') : null;
   const pressureCtx = pressureChartCanvas ? pressureChartCanvas.getContext('2d') : null;
+  const ChartCtor = window.Chart;
   const customCss = getComputedStyle(document.documentElement);
   const legendLabelColor = customCss.getPropertyValue('--chart-text').trim() || '#888';
   const gridColor = customCss.getPropertyValue('--chart-grid').trim() || 'rgba(0,0,0,0.1)';
@@ -205,8 +224,8 @@
     { tag: 'U5', label: 'Unassigned', connected: false },
     { tag: 'TTO', label: 'Tank outlet', connected: true },
     { tag: 'TMI', label: 'Pump inlet', connected: true },
-    { tag: 'THM', label: 'HEX middle', connected: true },
     { tag: 'THI', label: 'HEX inlet', connected: true },
+    { tag: 'THM', label: 'HEX middle', connected: true },
   ];
   const CONNECTED_SENSOR_INDICES = SENSOR_METADATA.reduce((indices, meta, index) => {
     if (meta && meta.connected) {
@@ -264,16 +283,45 @@
     return trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase();
   }
 
-  let currentSetpoint = SETPOINT;
+  let currentHfeGoalC = DEFAULT_HFE_GOAL_C;
+  let currentHxLimitC = DEFAULT_HX_LIMIT_C;
+  let currentAutoHysteresisC = DEFAULT_AUTO_HYSTERESIS_C;
+  let currentHxApproachC = DEFAULT_HX_APPROACH_C;
   let pumpMaxFreqHz = PUMP_MAX_FREQ_HZ;
   let lastPumpCmdPct = 0;
   let pumpRunning = false;
   let userPumpDirty = false;
   let overspeedEnabled = false;
   let pumpSafetyState = buildPumpSafetyModel(null, null);
+  const localAutoTargetOverrides = new Set();
 
-  function setpointLabel() {
-    return `Set-point (${currentSetpoint.toFixed(1)} °C)`;
+  function hfeGoalLabel() {
+    return `HFE goal (${currentHfeGoalC.toFixed(1)} °C)`;
+  }
+
+  function nearlyEqualTemperature(a, b) {
+    return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= AUTO_TARGET_EPSILON_C;
+  }
+
+  function canUseTelemetryAutoTarget(key, telemetryValue, currentValue) {
+    if (!Number.isFinite(telemetryValue)) {
+      return false;
+    }
+    if (!localAutoTargetOverrides.has(key)) {
+      return true;
+    }
+    if (nearlyEqualTemperature(telemetryValue, currentValue)) {
+      localAutoTargetOverrides.delete(key);
+      return true;
+    }
+    return false;
+  }
+
+  function markLocalAutoTargets() {
+    localAutoTargetOverrides.add('hfeGoal');
+    localAutoTargetOverrides.add('hxLimit');
+    localAutoTargetOverrides.add('hysteresis');
+    localAutoTargetOverrides.add('hxApproach');
   }
 
   function formatThermocoupleValue(value) {
@@ -302,6 +350,98 @@
     }
   }
 
+  function formatTemperatureSummary(value, digits = 1) {
+    const num = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(num) ? `${num.toFixed(digits)} °C` : '—';
+  }
+
+  function updateAutoModeStatus(control) {
+    if (!autoModeStatusEl) {
+      return;
+    }
+
+    const autoControl = control && typeof control === 'object' ? control : null;
+    if (!autoControl) {
+      autoModeStatusEl.textContent = `Auto targets configured locally. Waiting for firmware auto-mode status telemetry. HFE goal ${formatTemperatureSummary(
+        currentHfeGoalC,
+      )}, HX limit ${formatTemperatureSummary(currentHxLimitC)}, HX approach ${formatTemperatureSummary(
+        currentHxApproachC,
+      )}, hysteresis ${formatTemperatureSummary(currentAutoHysteresisC)}.`;
+      setTone(autoModeStatusEl, 'info');
+      return;
+    }
+
+    const thiTempC = finiteNumber(autoControl.thi_temp_c);
+    const flowTempC = finiteNumber(autoControl.flow_temp_c);
+    const thiReopenC = finiteNumber(autoControl.thi_reopen_c);
+    const flowReopenC = finiteNumber(autoControl.flow_reopen_c);
+    const closeRequested = coerceOnOff(autoControl.close_requested) === true;
+    const readyToOpen = coerceOnOff(autoControl.ready_to_open) === true;
+    const autoCloseLatched = coerceOnOff(autoControl.auto_close_latched) === true;
+    const withinBand = coerceOnOff(autoControl.within_hysteresis_band) === true;
+    const reason =
+      typeof autoControl.auto_close_reason === 'string'
+        ? autoControl.auto_close_reason.trim().toLowerCase()
+        : 'none';
+    const manualMode = latestSnapshot && latestSnapshot.modeChar && latestSnapshot.modeChar !== 'A';
+    const valveOpen = latestSnapshot && Number(latestSnapshot.valve) !== 0;
+
+    let text = '';
+    let tone = '';
+
+    if (manualMode) {
+      text = `Auto is configured with HFE goal ${formatTemperatureSummary(
+        currentHfeGoalC,
+      )}, HX limit ${formatTemperatureSummary(currentHxLimitC)}, HX approach ${formatTemperatureSummary(
+        currentHxApproachC,
+      )}, and hysteresis ${formatTemperatureSummary(currentAutoHysteresisC)}.`;
+      tone = 'warn';
+    } else if (closeRequested) {
+      if (reason === 'missing_thi') {
+        text = 'Auto is holding the LN valve closed because THI telemetry is unavailable.';
+      } else if (reason === 'missing_flow_temp') {
+        text = 'Auto is holding the LN valve closed because flow-meter temperature telemetry is unavailable.';
+      } else if (reason === 'thi_limit') {
+        text = `Auto is holding the LN valve closed because THI is ${formatTemperatureSummary(
+          thiTempC,
+        )}, at or below the HX limit ${formatTemperatureSummary(currentHxLimitC)}. It can reopen once THI rises above ${formatTemperatureSummary(
+          thiReopenC,
+        )} (flow − ${formatTemperatureSummary(currentHxApproachC)}) and the flow meter is above ${formatTemperatureSummary(flowReopenC)}.`;
+      } else if (reason === 'flow_goal') {
+        text = `Auto is holding the LN valve closed because flow-meter temperature is ${formatTemperatureSummary(
+          flowTempC,
+        )}, at or below the HFE goal ${formatTemperatureSummary(currentHfeGoalC)}. It can reopen once THI rises above ${formatTemperatureSummary(
+          thiReopenC,
+        )} (flow − ${formatTemperatureSummary(currentHxApproachC)}) and the flow meter is above ${formatTemperatureSummary(flowReopenC)}.`;
+      } else {
+        text = 'Auto is holding the LN valve closed.';
+      }
+      tone = 'warn';
+    } else if (readyToOpen) {
+      text = `Auto ${valveOpen ? 'has the LN valve open' : 'is ready to open the LN valve'}. THI is ${formatTemperatureSummary(
+        thiTempC,
+      )} and flow-meter temperature is ${formatTemperatureSummary(
+        flowTempC,
+      )}, both above their reopen thresholds.`;
+      tone = 'success';
+    } else if (withinBand || autoCloseLatched) {
+      text = `Auto is holding the LN valve closed until the hysteresis band clears. Reopen thresholds are THI ${formatTemperatureSummary(
+        thiReopenC,
+      )} (flow − ${formatTemperatureSummary(currentHxApproachC)}) and flow-meter temperature ${formatTemperatureSummary(flowReopenC)}.`;
+      tone = 'info';
+    } else {
+      text = `Auto close thresholds are clear; the LN valve is ${
+        valveOpen ? 'open' : 'allowed to open'
+      }. THI reopen threshold ${formatTemperatureSummary(thiReopenC)} and flow-meter reopen threshold ${formatTemperatureSummary(
+        flowReopenC,
+      )} apply after an auto close.`;
+      tone = 'success';
+    }
+
+    autoModeStatusEl.textContent = text;
+    setTone(autoModeStatusEl, tone);
+  }
+
   function createTimeScale() {
     return {
       type: 'linear',
@@ -326,7 +466,7 @@
   }
 
   const setpointDataset = {
-    label: setpointLabel(),
+    label: hfeGoalLabel(),
     borderColor: '#adb5bd',
     borderWidth: 1,
     borderDash: [6, 6],
@@ -336,8 +476,8 @@
     data: [],
   };
 
-  const chart = tempCtx
-    ? new Chart(tempCtx, {
+  const chart = tempCtx && ChartCtor
+    ? new ChartCtor(tempCtx, {
         type: 'line',
         data: {
           datasets: [...sensorDatasets, setpointDataset],
@@ -397,8 +537,8 @@
       })
     : null;
 
-  const pressureChart = pressureCtx
-    ? new Chart(pressureCtx, {
+  const pressureChart = pressureCtx && ChartCtor
+    ? new ChartCtor(pressureCtx, {
         type: 'line',
         data: {
           datasets: pressureDatasets,
@@ -643,7 +783,7 @@
       return text.slice(0, 1);
     }
     if (column.startsWith('pump_') || column.startsWith('fluid_')) {
-      const digits = LOG_FIELD_DIGITS.get(column) || 3;
+      const digits = LOG_FIELD_DIGITS.get(column) ?? 3;
       const num = typeof value === 'number' ? value : Number(value);
       return Number.isFinite(num) ? num.toFixed(digits) : 'nan';
     }
@@ -732,7 +872,7 @@
       mainEl.textContent = Number.isFinite(value) ? value.toFixed(digits) : '—';
     }
     if (subEl) {
-      subEl.textContent = Number.isFinite(pctValue) ? `${pctValue.toFixed(1)} %` : '—';
+      subEl.textContent = Number.isFinite(pctValue) ? `${pctValue.toFixed(1)} %` : '';
     }
   }
 
@@ -1252,20 +1392,32 @@
 
     const freqHz = pump && Number.isFinite(pump.freq_hz) ? pump.freq_hz : null;
     const freqPct =
-      pump && Number.isFinite(pump.freq_pct)
-        ? pump.freq_pct
-        : Number.isFinite(freqHz) && Number.isFinite(pumpMaxFreqHz) && pumpMaxFreqHz > 0
+      Number.isFinite(freqHz) && Number.isFinite(pumpMaxFreqHz) && pumpMaxFreqHz > 0
         ? (freqHz / pumpMaxFreqHz) * 100
         : null;
 
     const currentA = pump && Number.isFinite(pump.output_current_a) ? pump.output_current_a : null;
     const currentPct =
-      pump && Number.isFinite(pump.output_current_pct) ? pump.output_current_pct : null;
+      Number.isFinite(currentA) && PUMP_NAMEPLATE_CURRENT_A > 0
+        ? (currentA / PUMP_NAMEPLATE_CURRENT_A) * 100
+        : null;
     const voltageV = pump && Number.isFinite(pump.output_voltage_v) ? pump.output_voltage_v : null;
     const voltagePct =
-      pump && Number.isFinite(pump.output_voltage_pct) ? pump.output_voltage_pct : null;
-    const powerW = pump && Number.isFinite(pump.input_power_w) ? pump.input_power_w : null;
-    const powerPct = pump && Number.isFinite(pump.input_power_pct) ? pump.input_power_pct : null;
+      Number.isFinite(voltageV) && PUMP_BASE_VOLTAGE_V > 0
+        ? (voltageV / PUMP_BASE_VOLTAGE_V) * 100
+        : null;
+    const powerW =
+      pump && Number.isFinite(pump.input_power_w)
+        ? pump.input_power_w
+        : pump && Number.isFinite(pump.input_power_kw)
+        ? pump.input_power_kw * 1000
+        : null;
+    const powerPct =
+      Number.isFinite(powerW) && PUMP_EST_RATED_INPUT_W > 0
+        ? (powerW / PUMP_EST_RATED_INPUT_W) * 100
+        : null;
+    const rotationSpeedRpm =
+      pump && Number.isFinite(pump.rotation_speed_rpm) ? pump.rotation_speed_rpm : null;
 
     const overviewHz = Number.isFinite(freqHz) ? freqHz : cmdHz;
 
@@ -1298,18 +1450,22 @@
       pumpCmdHzEl.textContent = Number.isFinite(cmdHz) ? `${cmdHz.toFixed(2)} Hz` : '—';
     }
     if (pumpCmdRpmEl) {
-      const estRpm = Number.isFinite(cmdHz) && pumpMaxFreqHz > 0 ? (cmdHz / pumpMaxFreqHz) * 2150 : null;
-      pumpCmdRpmEl.textContent = Number.isFinite(estRpm) ? `${estRpm.toFixed(0)} rpm` : '—';
+      pumpCmdRpmEl.textContent = overspeedEnabled ? '0 to 71.7 Hz' : '0 to 60.0 Hz';
     }
     if (pumpCmdFlowEl) {
-      const estFlow = Number.isFinite(cmdHz) && pumpMaxFreqHz > 0 ? (cmdHz / pumpMaxFreqHz) * 4.0 : null;
-      pumpCmdFlowEl.textContent = Number.isFinite(estFlow) ? `${estFlow.toFixed(2)} L/min (est.)` : '—';
+      pumpCmdFlowEl.textContent = overspeedEnabled
+        ? 'Overspeed enabled for commands above 60 Hz'
+        : 'Nominal operating range with overspeed locked out';
     }
 
     renderMetric(vfdFrequencyEl, vfdFrequencyPctEl, freqHz, 2, freqPct);
     renderMetric(vfdCurrentEl, vfdCurrentPctEl, currentA, 2, currentPct);
     renderMetric(vfdVoltageEl, vfdVoltagePctEl, voltageV, 1, voltagePct);
-    renderMetric(vfdPowerEl, vfdPowerPctEl, powerW, 1, powerPct);
+    renderMetric(vfdPowerEl, vfdPowerPctEl, powerW, 0, powerPct);
+    renderMetric(vfdSpeedEl, vfdSpeedSubEl, rotationSpeedRpm, 0, null);
+    if (vfdSpeedSubEl) {
+      vfdSpeedSubEl.textContent = 'estimated from output Hz';
+    }
     if (vfdPowerUnitEl) {
       vfdPowerUnitEl.textContent = 'W';
     }
@@ -1389,7 +1545,7 @@
     }
 
     if (fluidDensityEl) {
-      fluidDensityEl.textContent = formatNumber(fluidModel.density_kg_m3, 4, ' kg/m³');
+      fluidDensityEl.textContent = formatNumber(fluidModel.density_kg_m3, 0, ' kg/m³');
     }
 
     if (fluidTempRiseEl) {
@@ -1440,12 +1596,57 @@
     let tMin = (ts - startEpochSec) / 60;
     const visibleIndices = new Set(visibleSensorIndices(sensorCount));
     const control = data && typeof data.control === 'object' ? data.control : null;
-    const telemetrySetpoint = control ? finiteNumber(control.setpoint_c) : NaN;
-    if (Number.isFinite(telemetrySetpoint) && telemetrySetpoint !== currentSetpoint) {
-      currentSetpoint = telemetrySetpoint;
-      setpointDataset.label = setpointLabel();
-      if (setpointInput && document.activeElement !== setpointInput) {
-        setpointInput.value = currentSetpoint.toFixed(2);
+    const telemetryHfeGoal = control
+      ? finiteNumber(control.hfe_goal_c ?? control.setpoint_c)
+      : NaN;
+    const telemetryHxLimit = control
+      ? finiteNumber(
+          control.hx_limit_c ??
+            control.thi_limit_c ??
+            (Number.isFinite(finiteNumber(control.setpoint_c)) &&
+            Number.isFinite(finiteNumber(control.thi_guard_offset_c))
+              ? finiteNumber(control.setpoint_c) - finiteNumber(control.thi_guard_offset_c)
+              : NaN),
+        )
+      : NaN;
+    const telemetryHysteresis = control ? finiteNumber(control.ln_hysteresis_c) : NaN;
+    const telemetryHxApproach = control ? finiteNumber(control.hx_approach_c) : NaN;
+
+    if (
+      canUseTelemetryAutoTarget('hfeGoal', telemetryHfeGoal, currentHfeGoalC) &&
+      telemetryHfeGoal !== currentHfeGoalC
+    ) {
+      currentHfeGoalC = telemetryHfeGoal;
+      setpointDataset.label = hfeGoalLabel();
+      if (hfeGoalInput && document.activeElement !== hfeGoalInput) {
+        hfeGoalInput.value = currentHfeGoalC.toFixed(2);
+      }
+    }
+    if (
+      canUseTelemetryAutoTarget('hxLimit', telemetryHxLimit, currentHxLimitC) &&
+      telemetryHxLimit !== currentHxLimitC
+    ) {
+      currentHxLimitC = telemetryHxLimit;
+      if (hxLimitInput && document.activeElement !== hxLimitInput) {
+        hxLimitInput.value = currentHxLimitC.toFixed(2);
+      }
+    }
+    if (
+      canUseTelemetryAutoTarget('hysteresis', telemetryHysteresis, currentAutoHysteresisC) &&
+      telemetryHysteresis !== currentAutoHysteresisC
+    ) {
+      currentAutoHysteresisC = telemetryHysteresis;
+      if (autoHysteresisInput && document.activeElement !== autoHysteresisInput) {
+        autoHysteresisInput.value = currentAutoHysteresisC.toFixed(2);
+      }
+    }
+    if (
+      canUseTelemetryAutoTarget('hxApproach', telemetryHxApproach, currentHxApproachC) &&
+      telemetryHxApproach !== currentHxApproachC
+    ) {
+      currentHxApproachC = telemetryHxApproach;
+      if (hxApproachInput && document.activeElement !== hxApproachInput) {
+        hxApproachInput.value = currentHxApproachC.toFixed(2);
       }
     }
 
@@ -1456,7 +1657,7 @@
       sensorDatasets[i].hidden = !visibleIndices.has(i);
     }
 
-    pushSeries(setpointSeries, { x: tMin, y: currentSetpoint });
+    pushSeries(setpointSeries, { x: tMin, y: currentHfeGoalC });
     setpointDataset.data = setpointSeries;
 
     if (tMin > WINDOW_MINUTES) {
@@ -1524,10 +1725,12 @@
       pump,
       safety,
       fluid,
+      control,
     };
     updatePumpTelemetry(pump, pumpSafetyState);
     updateSensorStats();
     updateFluidTelemetry(fluid, pump);
+    updateAutoModeStatus(control);
 
     if (!previousEmergencyStop && pumpSafetyState.resetRequired) {
       setCommandStatus(pumpSafetyState.message || 'Emergency stop triggered', 'error');
@@ -1784,44 +1987,144 @@
     });
   }
 
-  if (setpointForm) {
-    setpointForm.addEventListener('submit', async (event) => {
+  if (autoControlForm) {
+    autoControlForm.addEventListener('submit', async (event) => {
       event.preventDefault();
-      if (!setpointInput) {
+      if (!hfeGoalInput || !hxLimitInput || !autoHysteresisInput || !hxApproachInput) {
         return;
       }
 
-      const setpoint = parseFloat(setpointInput.value);
-      if (!Number.isFinite(setpoint)) {
-        setCommandStatus('Invalid setpoint value', 'error');
+      const nextHfeGoalC = parseFloat(hfeGoalInput.value);
+      const nextHxLimitC = parseFloat(hxLimitInput.value);
+      const nextAutoHysteresisC = parseFloat(autoHysteresisInput.value);
+      const nextHxApproachC = parseFloat(hxApproachInput.value);
+
+      if (!Number.isFinite(nextHfeGoalC)) {
+        setCommandStatus('Invalid HFE goal value', 'error');
         return;
       }
-
-      const command = `SETPOINT ${setpoint.toFixed(2)}`;
+      if (!Number.isFinite(nextHxLimitC)) {
+        setCommandStatus('Invalid HX limit value', 'error');
+        return;
+      }
+      if (!Number.isFinite(nextAutoHysteresisC) || nextAutoHysteresisC < 0) {
+        setCommandStatus('Invalid hysteresis value', 'error');
+        return;
+      }
+      if (!Number.isFinite(nextHxApproachC) || nextHxApproachC < 0) {
+        setCommandStatus('Invalid HX approach value', 'error');
+        return;
+      }
 
       try {
-        setCommandStatus('Updating setpoint…', 'info');
-        await apiJson('/api/command', {
-          method: 'POST',
-          body: JSON.stringify({ cmd: command }),
-        });
-        currentSetpoint = setpoint;
+        setCommandStatus('Updating auto-mode targets…', 'info');
+        const latestControl =
+          latestSnapshot && latestSnapshot.control && typeof latestSnapshot.control === 'object'
+            ? latestSnapshot.control
+            : null;
+        const supportsAtomicAutoTargets =
+          latestControl && Object.prototype.hasOwnProperty.call(latestControl, 'auto_close_latched');
+
+        if (supportsAtomicAutoTargets) {
+          const autoTargetsCommand = `AUTO TARGETS ${nextHfeGoalC.toFixed(2)} ${nextHxLimitC.toFixed(
+            2,
+          )} ${nextHxApproachC.toFixed(2)} ${nextAutoHysteresisC.toFixed(2)}`;
+          await apiJson('/api/command', {
+            method: 'POST',
+            body: JSON.stringify({ cmd: autoTargetsCommand }),
+          });
+        } else {
+          const legacyCommands = [
+            `HFE GOAL ${nextHfeGoalC.toFixed(2)}`,
+            `HX LIMIT ${nextHxLimitC.toFixed(2)}`,
+            `HX APPROACH ${nextHxApproachC.toFixed(2)}`,
+            `HYSTERESIS ${nextAutoHysteresisC.toFixed(2)}`,
+          ];
+          for (const cmd of legacyCommands) {
+            await apiJson('/api/command', {
+              method: 'POST',
+              body: JSON.stringify({ cmd }),
+            });
+          }
+        }
+        currentHfeGoalC = nextHfeGoalC;
+        currentHxLimitC = nextHxLimitC;
+        currentAutoHysteresisC = nextAutoHysteresisC;
+        currentHxApproachC = nextHxApproachC;
+        markLocalAutoTargets();
         setpointSeries.length = 0;
         setpointDataset.data = setpointSeries;
-        setpointDataset.label = setpointLabel();
-        if (setpointInput) {
-          setpointInput.value = currentSetpoint.toFixed(2);
+        setpointDataset.label = hfeGoalLabel();
+        hfeGoalInput.value = currentHfeGoalC.toFixed(2);
+        hxLimitInput.value = currentHxLimitC.toFixed(2);
+        autoHysteresisInput.value = currentAutoHysteresisC.toFixed(2);
+        hxApproachInput.value = currentHxApproachC.toFixed(2);
+        const nextAutoControl =
+          latestSnapshot && latestSnapshot.control && typeof latestSnapshot.control === 'object'
+            ? { ...latestSnapshot.control }
+            : {};
+        nextAutoControl.hfe_goal_c = currentHfeGoalC;
+        nextAutoControl.setpoint_c = currentHfeGoalC;
+        nextAutoControl.hx_limit_c = currentHxLimitC;
+        nextAutoControl.thi_limit_c = currentHxLimitC;
+        nextAutoControl.ln_hysteresis_c = currentAutoHysteresisC;
+        nextAutoControl.hx_approach_c = currentHxApproachC;
+        const thiTempForPreview = finiteNumber(nextAutoControl.thi_temp_c);
+        const flowTempForPreview = finiteNumber(nextAutoControl.flow_temp_c);
+        nextAutoControl.thi_reopen_c = Number.isFinite(flowTempForPreview)
+          ? flowTempForPreview - currentHxApproachC
+          : null;
+        nextAutoControl.flow_reopen_c = currentHfeGoalC + currentAutoHysteresisC;
+        nextAutoControl.thi_valid = Number.isFinite(thiTempForPreview);
+        nextAutoControl.flow_valid = Number.isFinite(flowTempForPreview);
+        let previewCloseRequested = false;
+        let previewReason = 'none';
+        if (!Number.isFinite(thiTempForPreview)) {
+          previewCloseRequested = true;
+          previewReason = 'missing_thi';
+        } else if (!Number.isFinite(flowTempForPreview)) {
+          previewCloseRequested = true;
+          previewReason = 'missing_flow_temp';
+        } else if (thiTempForPreview <= currentHxLimitC) {
+          previewCloseRequested = true;
+          previewReason = 'thi_limit';
+        } else if (flowTempForPreview <= currentHfeGoalC) {
+          previewCloseRequested = true;
+          previewReason = 'flow_goal';
         }
+        const previewReadyToOpen =
+          !previewCloseRequested &&
+          Number.isFinite(nextAutoControl.thi_reopen_c) &&
+          thiTempForPreview >= nextAutoControl.thi_reopen_c &&
+          flowTempForPreview >= nextAutoControl.flow_reopen_c;
+        let previewAutoCloseLatched = coerceOnOff(nextAutoControl.auto_close_latched) === true;
+        if (previewCloseRequested) {
+          previewAutoCloseLatched = true;
+        } else if (previewReadyToOpen) {
+          previewAutoCloseLatched = false;
+        }
+        nextAutoControl.close_requested = previewCloseRequested;
+        nextAutoControl.ready_to_open = previewReadyToOpen;
+        nextAutoControl.auto_close_latched = previewAutoCloseLatched;
+        nextAutoControl.within_hysteresis_band =
+          previewAutoCloseLatched && !previewCloseRequested && !previewReadyToOpen;
+        nextAutoControl.auto_close_reason = previewReason;
         if (latestSnapshot) {
-          updateSensorStats();
+          latestSnapshot.control = nextAutoControl;
         }
+        updateAutoModeStatus(nextAutoControl);
         if (chart) {
           chart.update('none');
         }
-        setCommandStatus(`Setpoint set to ${currentSetpoint.toFixed(2)} °C`, 'success');
+        setCommandStatus(
+          `Auto targets set: HFE goal ${currentHfeGoalC.toFixed(2)} °C, HX limit ${currentHxLimitC.toFixed(
+            2,
+          )} °C, HX approach ${currentHxApproachC.toFixed(2)} °C, hysteresis ${currentAutoHysteresisC.toFixed(2)} °C`,
+          'success',
+        );
       } catch (err) {
-        console.error('Setpoint update failed', err);
-        setCommandStatus(`Setpoint update failed: ${err.message}`, 'error');
+        console.error('Auto-mode target update failed', err);
+        setCommandStatus(`Auto-mode target update failed: ${err.message}`, 'error');
       }
     });
   }
@@ -1841,9 +2144,19 @@
     }
   });
 
-  if (setpointInput) {
-    setpointInput.value = currentSetpoint.toFixed(2);
+  if (hfeGoalInput) {
+    hfeGoalInput.value = currentHfeGoalC.toFixed(2);
   }
+  if (hxLimitInput) {
+    hxLimitInput.value = currentHxLimitC.toFixed(2);
+  }
+  if (autoHysteresisInput) {
+    autoHysteresisInput.value = currentAutoHysteresisC.toFixed(2);
+  }
+  if (hxApproachInput) {
+    hxApproachInput.value = currentHxApproachC.toFixed(2);
+  }
+  updateAutoModeStatus(null);
 
   syncPumpInputs(lastPumpCmdPct, { force: true });
   updatePumpSafetyStatus();

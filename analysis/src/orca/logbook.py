@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
+import re
 from typing import Mapping, Sequence
 
 import matplotlib.pyplot as plt
@@ -23,6 +25,13 @@ BAR_LMIN_TO_W = 1e5 * 1e-3 / 60.0
 DEFAULT_GEAR_PUMP_POWER_TREND_S = 150.0
 
 DEFAULT_HFE_LIQUID_DENSITY_BOUNDS = (1200.0, 1600.0)
+
+MAIN_OVERVIEW_PUMP_CMD_YLIM = (0.0, 100.0)
+MAIN_OVERVIEW_PUMP_FREQ_YLIM = (0.0, 72.0)
+MAIN_OVERVIEW_TEMPERATURE_YLIM = (-120.0, 30.0)
+MAIN_OVERVIEW_MASS_FLOW_YLIM = (-1.5, 7.0)
+MAIN_OVERVIEW_VOLUME_FLOW_YLIM = (-2.0, 6.5)
+MAIN_OVERVIEW_PRESSURE_YLIM = (0.9, 3.4)
 
 SEGMENT_CLASS_COLORS: Mapping[str, str] = {
     "gas-rich / empty": "C3",
@@ -77,11 +86,11 @@ THERMOCOUPLE_TAG_BY_INDEX: Mapping[int, str] = {
     5: "U5",
     6: "TTO",
     7: "TMI",
-    8: "THM",
-    9: "THI",
+    8: "THI",
+    9: "THM",
 }
 
-CONNECTED_THERMOCOUPLE_TAGS: tuple[str, ...] = ("TFO", "TTI", "TTO", "TMI", "THM", "THI")
+CONNECTED_THERMOCOUPLE_TAGS: tuple[str, ...] = ("TFO", "TTI", "TTO", "TMI", "THI", "THM")
 
 THERMOCOUPLE_COLUMN_MAP: Mapping[str, str] = {
     f"temp{index}_C": f"{tag}_C"
@@ -97,6 +106,104 @@ THERMOCOUPLE_LABELS: Mapping[str, str] = {
     "THM_C": "THM",
     "THI_C": "THI",
 }
+
+LEGACY_TC_FIX_TIMESTAMP = datetime(2026, 4, 20, 11, 15, 45)
+LEGACY_WRONG_TYPE_TC_COLUMNS: tuple[str, ...] = ("TTEST_C", "TFO_C", "TTI_C", "TTO_C", "TMI_C")
+LEGACY_FLOW_WRONG_TYPE_TC_COLUMNS: tuple[str, ...] = ("TFO_C", "TTI_C", "TTO_C", "TMI_C")
+LEGACY_EFFECTIVE_COLD_JUNCTION_C = 21.44563390332121
+LEGACY_ROOM_ONLY_TC_CALIBRATION: Mapping[str, tuple[float, float]] = {
+    "THM_C": (1.0, -0.6422222222222214),
+    "THI_C": (1.0, 0.5877777777777773),
+}
+
+# NIST ITS-90 absolute emf reference functions for the two thermocouple types we
+# need for legacy back-conversion. The logged legacy temperatures were produced
+# by a Type-K linearisation of mostly Type-T probes.
+_NIST_TYPE_K_ABS_EMF_TABLE = (
+    (
+        -270.0,
+        0.0,
+        np.array(
+            [
+                -0.163226974860e-22,
+                -0.198892668780e-19,
+                -0.104516093650e-16,
+                -0.310888728940e-14,
+                -0.574103274280e-12,
+                -0.675090591730e-10,
+                -0.499048287770e-08,
+                -0.328589067840e-06,
+                0.236223735980e-04,
+                0.394501280250e-01,
+                0.000000000000e00,
+            ]
+        ),
+        None,
+    ),
+    (
+        0.0,
+        1372.0,
+        np.array(
+            [
+                -0.121047212750e-25,
+                0.971511471520e-22,
+                -0.320207200030e-18,
+                0.560750590590e-15,
+                -0.560728448890e-12,
+                0.318409457190e-09,
+                -0.994575928740e-07,
+                0.185587700320e-04,
+                0.389212049750e-01,
+                -0.176004136860e-01,
+            ]
+        ),
+        (0.118597600000e00, -0.118343200000e-03, 0.126968600000e03),
+    ),
+)
+_NIST_TYPE_T_ABS_EMF_TABLE = (
+    (
+        -270.0,
+        0.0,
+        np.array(
+            [
+                0.797951539270e-30,
+                0.139450270620e-26,
+                0.107955392700e-23,
+                0.487686622860e-21,
+                0.142515947790e-18,
+                0.282135219250e-16,
+                0.384939398830e-14,
+                0.360711542050e-12,
+                0.226511565930e-10,
+                0.901380195590e-09,
+                0.200329735540e-07,
+                0.118443231050e-06,
+                0.441944343470e-04,
+                0.387481063640e-01,
+                0.000000000000e00,
+            ]
+        ),
+        None,
+    ),
+    (
+        0.0,
+        400.0,
+        np.array(
+            [
+                -0.275129016730e-19,
+                0.454791352900e-16,
+                -0.308157587720e-13,
+                0.109968809280e-10,
+                -0.218822568460e-08,
+                0.206182434040e-06,
+                0.332922278800e-04,
+                0.387481063640e-01,
+                0.000000000000e00,
+            ]
+        ),
+        None,
+    ),
+)
 
 SIGNAL_TITLES: Mapping[str, str] = {
     "density_kg_m3_si": "Density follows temperature closely",
@@ -193,6 +300,211 @@ class DensityStudy:
 def _numeric_column(frame: pd.DataFrame, column: str, default: float = np.nan) -> pd.Series:
     value = frame[column] if column in frame.columns else pd.Series(default, index=frame.index)
     return pd.to_numeric(value, errors="coerce")
+
+
+def _evaluate_nist_abs_emf_c(values_c: np.ndarray | pd.Series | float, table: Sequence[tuple]) -> np.ndarray:
+    temperatures_c = np.asarray(values_c, dtype=float)
+    emf_mv = np.full(temperatures_c.shape, np.nan, dtype=float)
+    last_index = len(table) - 1
+
+    for index, (t_min_c, t_max_c, coefficients, gaussian) in enumerate(table):
+        upper_ok = temperatures_c <= t_max_c if index == last_index else temperatures_c < t_max_c
+        mask = np.isfinite(temperatures_c) & (temperatures_c >= t_min_c) & upper_ok
+        if not np.any(mask):
+            continue
+
+        segment_temp_c = temperatures_c[mask]
+        segment_emf_mv = np.polyval(coefficients, segment_temp_c)
+        if gaussian is not None:
+            amplitude, exponent_scale, center_c = gaussian
+            segment_emf_mv = segment_emf_mv + amplitude * np.exp(exponent_scale * (segment_temp_c - center_c) ** 2)
+        emf_mv[mask] = segment_emf_mv
+
+    return emf_mv
+
+
+@lru_cache(maxsize=1)
+def _type_t_abs_emf_lookup() -> tuple[np.ndarray, np.ndarray]:
+    # A dense monotonic lookup table is fast and stable enough for notebook use.
+    temperature_grid_c = np.arange(-270.0, 400.0 + 0.02, 0.02, dtype=float)
+    emf_grid_mv = _evaluate_nist_abs_emf_c(temperature_grid_c, _NIST_TYPE_T_ABS_EMF_TABLE)
+    return emf_grid_mv, temperature_grid_c
+
+
+def _inverse_type_t_abs_emf_to_c(emf_mv: np.ndarray | pd.Series | float) -> np.ndarray:
+    emf_values_mv = np.asarray(emf_mv, dtype=float)
+    emf_grid_mv, temperature_grid_c = _type_t_abs_emf_lookup()
+    temperatures_c = np.full(emf_values_mv.shape, np.nan, dtype=float)
+    in_range = (
+        np.isfinite(emf_values_mv)
+        & (emf_values_mv >= float(emf_grid_mv[0]))
+        & (emf_values_mv <= float(emf_grid_mv[-1]))
+    )
+    if np.any(in_range):
+        temperatures_c[in_range] = np.interp(emf_values_mv[in_range], emf_grid_mv, temperature_grid_c)
+    return temperatures_c
+
+
+def _legacy_wrong_k_to_true_t_c(
+    values_c: np.ndarray | pd.Series | float,
+    *,
+    cold_junction_c: float = LEGACY_EFFECTIVE_COLD_JUNCTION_C,
+) -> np.ndarray:
+    wrong_values_c = np.asarray(values_c, dtype=float)
+    measured_abs_emf_mv = _evaluate_nist_abs_emf_c(wrong_values_c, _NIST_TYPE_K_ABS_EMF_TABLE)
+
+    cj_abs_emf_k_mv = float(_evaluate_nist_abs_emf_c(np.array([cold_junction_c]), _NIST_TYPE_K_ABS_EMF_TABLE)[0])
+    cj_abs_emf_t_mv = float(_evaluate_nist_abs_emf_c(np.array([cold_junction_c]), _NIST_TYPE_T_ABS_EMF_TABLE)[0])
+
+    measured_relative_emf_mv = measured_abs_emf_mv - cj_abs_emf_k_mv
+    corrected_abs_emf_t_mv = measured_relative_emf_mv + cj_abs_emf_t_mv
+    return _inverse_type_t_abs_emf_to_c(corrected_abs_emf_t_mv)
+
+
+def _parse_log_timestamp(log_path: str | Path | None) -> datetime | None:
+    if log_path is None:
+        return None
+    match = re.search(r"log_(\d{8})_(\d{6})", Path(log_path).stem)
+    if not match:
+        return None
+    return datetime.strptime("".join(match.groups()), "%Y%m%d%H%M%S")
+
+
+def is_legacy_wrong_type_log(log_path: str | Path | None) -> bool:
+    timestamp = _parse_log_timestamp(log_path)
+    return bool(timestamp is not None and timestamp < LEGACY_TC_FIX_TIMESTAMP)
+
+
+def _legacy_room_anchor_mask(
+    data: pd.DataFrame,
+    *,
+    tc_columns: Sequence[str],
+    flow_reference_column: str,
+) -> pd.Series:
+    if flow_reference_column not in data.columns or not tc_columns:
+        return pd.Series(False, index=data.index)
+
+    flow_temp_c = _numeric_column(data, flow_reference_column)
+    tc_frame = data.loc[:, list(tc_columns)].apply(pd.to_numeric, errors="coerce")
+    tc_span_c = tc_frame.max(axis=1) - tc_frame.min(axis=1)
+    finite = flow_temp_c.notna() & tc_span_c.notna()
+    if int(finite.sum()) == 0:
+        return pd.Series(False, index=data.index)
+
+    high_quantile_c = float(np.nanpercentile(flow_temp_c[finite], 97))
+    room_mask = finite & flow_temp_c.ge(high_quantile_c - 0.5) & tc_span_c.le(2.0)
+    if int(room_mask.sum()) >= 20:
+        return room_mask
+
+    warm_quantile_c = float(np.nanpercentile(flow_temp_c[finite], 95))
+    room_mask = finite & flow_temp_c.ge(warm_quantile_c - 1.0) & tc_span_c.le(3.0)
+    return room_mask
+
+
+def _warm_tc_anchor_mask(data: pd.DataFrame, *, tc_columns: Sequence[str]) -> pd.Series:
+    if not tc_columns:
+        return pd.Series(False, index=data.index)
+
+    tc_frame = data.loc[:, list(tc_columns)].apply(pd.to_numeric, errors="coerce")
+    tc_mean_c = tc_frame.mean(axis=1)
+    tc_span_c = tc_frame.max(axis=1) - tc_frame.min(axis=1)
+    finite = tc_mean_c.notna() & tc_span_c.notna()
+    if int(finite.sum()) == 0:
+        return pd.Series(False, index=data.index)
+
+    high_quantile_c = float(np.nanpercentile(tc_mean_c[finite], 97))
+    room_mask = finite & tc_mean_c.ge(high_quantile_c - 0.5) & tc_span_c.le(2.0)
+    if int(room_mask.sum()) >= 20:
+        return room_mask
+
+    warm_quantile_c = float(np.nanpercentile(tc_mean_c[finite], 95))
+    return finite & tc_mean_c.ge(warm_quantile_c - 1.0) & tc_span_c.le(3.0)
+
+
+def apply_legacy_tc_correction(
+    frame: pd.DataFrame,
+    *,
+    log_path: str | Path | None = None,
+    flow_reference_column: str = "temperature_c_si",
+    room_reference_c: float | None = None,
+) -> tuple[pd.DataFrame, str]:
+    """Back-convert pre-fix flow logs whose T-type probes were decoded as K-type."""
+
+    data = canonicalize_tc_columns(frame)
+    legacy_tc_columns = tuple(
+        column
+        for column in LEGACY_WRONG_TYPE_TC_COLUMNS
+        if column in data.columns and _numeric_column(data, column).notna().mean() > 0.05
+    )
+    if not legacy_tc_columns:
+        return data, ""
+
+    for column in legacy_tc_columns:
+        raw_values_c = _numeric_column(data, column)
+        data[column] = _legacy_wrong_k_to_true_t_c(raw_values_c.to_numpy())
+
+    note_parts = [
+        (
+            "Legacy wrong-type TC reconstruction applied to "
+            f"{', '.join(column.removesuffix('_C') for column in legacy_tc_columns)} "
+            f"using an effective cold-junction of {LEGACY_EFFECTIVE_COLD_JUNCTION_C:.2f} °C."
+        )
+    ]
+
+    room_anchor_offsets_c: dict[str, float] = {}
+    room_anchor_mask = pd.Series(False, index=data.index)
+
+    if flow_reference_column in data.columns:
+        room_anchor_mask = _legacy_room_anchor_mask(
+            data,
+            tc_columns=tuple(column for column in LEGACY_FLOW_WRONG_TYPE_TC_COLUMNS if column in data.columns),
+            flow_reference_column=flow_reference_column,
+        )
+        if int(room_anchor_mask.sum()) > 0:
+            flow_reference_c = _numeric_column(data, flow_reference_column)
+            for column in legacy_tc_columns:
+                delta_c = flow_reference_c[room_anchor_mask] - _numeric_column(data, column)[room_anchor_mask]
+                if not delta_c.notna().any():
+                    continue
+                offset_c = float(np.nanmedian(delta_c))
+                if np.isfinite(offset_c):
+                    data[column] = _numeric_column(data, column) + offset_c
+                    room_anchor_offsets_c[column] = offset_c
+            note_parts.append(
+                "Per-channel room-anchor offsets were fitted from the warmest stable flow-meter segment "
+                f"(n={int(room_anchor_mask.sum())})."
+            )
+    elif room_reference_c is not None:
+        room_anchor_mask = _warm_tc_anchor_mask(data, tc_columns=legacy_tc_columns)
+        if int(room_anchor_mask.sum()) > 0:
+            for column in legacy_tc_columns:
+                room_values_c = _numeric_column(data, column)[room_anchor_mask]
+                if not room_values_c.notna().any():
+                    continue
+                offset_c = float(room_reference_c - np.nanmedian(room_values_c))
+                if np.isfinite(offset_c):
+                    data[column] = _numeric_column(data, column) + offset_c
+                    room_anchor_offsets_c[column] = offset_c
+            note_parts.append(
+                "Per-channel room-anchor offsets were fitted from the warmest stable TC segment "
+                f"using {room_reference_c:.3f} °C as the room reference (n={int(room_anchor_mask.sum())})."
+            )
+
+    applied_room_only = []
+    for column, (gain, offset_c) in LEGACY_ROOM_ONLY_TC_CALIBRATION.items():
+        if column not in data.columns:
+            continue
+        data[column] = gain * _numeric_column(data, column) + offset_c
+        applied_room_only.append(column.removesuffix("_C"))
+    if applied_room_only:
+        note_parts.append(f"April 20 room-only offsets were also applied to {', '.join(applied_room_only)}.")
+
+    data.attrs["legacy_tc_correction_applied"] = True
+    data.attrs["legacy_tc_correction_log_path"] = str(log_path) if log_path is not None else ""
+    data.attrs["legacy_tc_effective_cold_junction_c"] = LEGACY_EFFECTIVE_COLD_JUNCTION_C
+    data.attrs["legacy_tc_room_anchor_samples"] = int(room_anchor_mask.sum())
+    data.attrs["legacy_tc_room_anchor_offsets_c"] = room_anchor_offsets_c
+    return data, " ".join(note_parts)
 
 
 def canonicalize_tc_columns(frame: pd.DataFrame) -> pd.DataFrame:
@@ -318,6 +630,7 @@ def add_canonical_flow_columns(
     frame: pd.DataFrame,
     *,
     density_bounds: tuple[float, float] = DEFAULT_HFE_LIQUID_DENSITY_BOUNDS,
+    log_path: str | Path | None = None,
 ) -> tuple[pd.DataFrame, str]:
     """Normalize one logger CSV into the canonical SI columns used in review notebooks."""
 
@@ -378,6 +691,12 @@ def add_canonical_flow_columns(
     data["delta_p_bar_recomputed"] = data["pump_pressure_after_bar_abs"] - data["pump_pressure_before_bar_abs"]
     data["t_min"] = _numeric_column(data, "time_s") / 60.0
     data["cmd_bucket_pct"] = data["pump_cmd_pct"].round(0)
+
+    if is_legacy_wrong_type_log(log_path):
+        data, tc_note = apply_legacy_tc_correction(data, log_path=log_path)
+        if tc_note:
+            note = f"{note} {tc_note}"
+
     return data, note
 
 
@@ -582,8 +901,8 @@ def prepare_flow_log_review(
     """Load one flow log and extract the stable automatic cooldown hold."""
 
     log_path = Path(path)
-    data = pd.read_csv(log_path)
-    data, flow_note = add_canonical_flow_columns(data, density_bounds=density_bounds)
+    data = pd.read_csv(log_path, comment="#")
+    data, flow_note = add_canonical_flow_columns(data, density_bounds=density_bounds, log_path=log_path)
     segment_summary = build_segment_summary(data)
 
     valid_temp_cols = connected_tc_columns(data)
@@ -978,14 +1297,20 @@ def plot_log_overview(review: FlowLogReview) -> plt.Figure:
 
     ax_cmd = axes[0]
     ax_freq = ax_cmd.twinx()
-    ax_cmd.plot(data["t_min"], data["pump_cmd_pct"], label="Pump command [%]")
-    ax_freq.plot(data["t_min"], data["pump_freq_hz"], label="Pump frequency [Hz]")
+    ax_cmd.plot(
+        data["t_min"],
+        data["pump_cmd_pct"],
+        color="#111827",
+        label="Pump command / frequency",
+    )
     _shade_segments(ax_cmd, review.segment_summary)
     ax_cmd.axvspan(review.stable_start_min, review.stable_end_min, color="C2", alpha=0.18)
     ax_cmd.set_ylabel("Pump command [%]")
+    ax_cmd.set_ylim(*MAIN_OVERVIEW_PUMP_CMD_YLIM)
     ax_freq.set_ylabel("Pump frequency [Hz]")
+    ax_freq.set_ylim(*MAIN_OVERVIEW_PUMP_FREQ_YLIM)
     ax_cmd.set_title("Full log overview with the stable automatic 20% hold highlighted")
-    lines = ax_cmd.get_lines() + ax_freq.get_lines()
+    lines = ax_cmd.get_lines()
     ax_cmd.legend(lines, [line.get_label() for line in lines], loc="best")
 
     axes[1].plot(data["t_min"], data["temperature_c_si"], label="Flow-meter temperature [°C]")
@@ -993,25 +1318,27 @@ def plot_log_overview(review: FlowLogReview) -> plt.Figure:
         axes[1].plot(data["t_min"], data[column], alpha=0.8, label=tc_display_name(column))
     axes[1].axvspan(review.stable_start_min, review.stable_end_min, color="C2", alpha=0.12)
     axes[1].set_ylabel("Temperature [°C]")
+    axes[1].set_ylim(*MAIN_OVERVIEW_TEMPERATURE_YLIM)
     axes[1].legend(loc="best", ncols=max(1, min(3, len(review.valid_temp_cols) + 1)))
 
-    ax_density = axes[2]
-    ax_flow = ax_density.twinx()
-    ax_density.plot(data["t_min"], data["density_kg_m3_si"], label="Density [kg/m$^3$]")
-    ax_density.axhspan(*DEFAULT_HFE_LIQUID_DENSITY_BOUNDS, color="C2", alpha=0.08)
-    ax_flow.plot(data["t_min"], data["mass_flow_kgmin_si"], label="Mass flow [kg/min]")
-    ax_flow.plot(data["t_min"], data["volume_flow_lmin_si"], label="Volume flow [L/min]")
-    ax_density.axvspan(review.stable_start_min, review.stable_end_min, color="C2", alpha=0.12)
-    ax_density.set_ylabel("Density [kg/m$^3$]")
-    ax_flow.set_ylabel("Flow")
-    lines = ax_density.get_lines() + ax_flow.get_lines()
-    ax_density.legend(lines, [line.get_label() for line in lines], loc="best")
+    ax_mass = axes[2]
+    ax_volume = ax_mass.twinx()
+    ax_mass.plot(data["t_min"], data["mass_flow_kgmin_si"], color="#2563eb", label="Mass flow [kg/min]")
+    ax_volume.plot(data["t_min"], data["volume_flow_lmin_si"], color="#dc2626", label="Volume flow [L/min]")
+    ax_mass.axvspan(review.stable_start_min, review.stable_end_min, color="C2", alpha=0.12)
+    ax_mass.set_ylabel("Mass flow [kg/min]")
+    ax_mass.set_ylim(*MAIN_OVERVIEW_MASS_FLOW_YLIM)
+    ax_volume.set_ylabel("Volume flow [L/min]")
+    ax_volume.set_ylim(*MAIN_OVERVIEW_VOLUME_FLOW_YLIM)
+    lines = ax_mass.get_lines() + ax_volume.get_lines()
+    ax_mass.legend(lines, [line.get_label() for line in lines], loc="best")
 
     axes[3].plot(data["t_min"], data["pump_pressure_before_bar_abs"], label="Before pump [bar abs]")
     axes[3].plot(data["t_min"], data["pump_pressure_after_bar_abs"], label="After pump [bar abs]")
     axes[3].plot(data["t_min"], data["pump_pressure_tank_bar_abs"], label="Tank [bar abs]")
     axes[3].axvspan(review.stable_start_min, review.stable_end_min, color="C2", alpha=0.12)
     axes[3].set_ylabel("Pressure [bar abs]")
+    axes[3].set_ylim(*MAIN_OVERVIEW_PRESSURE_YLIM)
     axes[3].set_xlabel("Elapsed time [min]")
     axes[3].legend(loc="best")
     return fig

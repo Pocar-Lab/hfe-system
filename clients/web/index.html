@@ -100,8 +100,46 @@
         <section class="hero-card">
           <h2>Pump Control</h2>
           <p>
-            Set the analog command for the circulation pump and watch live drive telemetry. Commands map 0–100% to 0–71.7 Hz (≈2150 rpm, ≈4.0 L/min HFE). Run/Stop remains controlled on the VFD keypad for safety.
+            Set the analog command for the circulation pump and watch live drive telemetry. This setup commands the Fuji FRENIC-Mini from 0 to 71.7 Hz, which is about 0 to 2150 rpm estimated on the 1 HP inverter-duty Baldor motor (1770 rpm at 60 Hz, 2700 rpm max at 90 Hz). Output frequency comes from M09, output current/voltage and input power come directly from W05/W06/W21, the percent badges are referenced to the motor and pump limits shown below, and motor speed is estimated from output frequency at 30 rpm/Hz. Flow is measured separately by the Krohne meter and is not inferred here. Run/Stop remains controlled on the VFD keypad for safety.
           </p>
+        </section>
+
+        <section class="pump-section">
+          <div class="stat-card">
+            <h2>Motor & Limits</h2>
+            <div class="pump-spec-board">
+              <div class="pump-spec-item">
+                <span class="pump-spec-key">Motor</span>
+                <span class="pump-spec-value">Baldor CECP3581T</span>
+                <span class="pump-spec-detail">1 HP, 3 phase, inverter-duty</span>
+              </div>
+              <div class="pump-spec-item">
+                <span class="pump-spec-key">Electrical Base</span>
+                <span class="pump-spec-value">230 V / 3.4 A</span>
+                <span class="pump-spec-detail">1.7 A on 460 V winding</span>
+              </div>
+              <div class="pump-spec-item">
+                <span class="pump-spec-key">Speed</span>
+                <span class="pump-spec-value">1770 rpm at 60 Hz</span>
+                <span class="pump-spec-detail">2700 rpm max at 90 Hz</span>
+              </div>
+              <div class="pump-spec-item">
+                <span class="pump-spec-key">Configured Range</span>
+                <span class="pump-spec-value">0 to 71.7 Hz</span>
+                <span class="pump-spec-detail">about 0 to 2150 rpm estimated in this system</span>
+              </div>
+              <div class="pump-spec-item">
+                <span class="pump-spec-key">Efficiency</span>
+                <span class="pump-spec-value">85.5% nominal</span>
+                <span class="pump-spec-detail">about 873 W rated electrical input</span>
+              </div>
+              <div class="pump-spec-item">
+                <span class="pump-spec-key">Nameplate PF</span>
+                <span class="pump-spec-value">0.69</span>
+                <span class="pump-spec-detail">rated-load reference only, not a live reading</span>
+              </div>
+            </div>
+          </div>
         </section>
 
         <section class="pump-section">
@@ -136,7 +174,7 @@
                     <span class="pill-sub">Analog output setpoint (Hz)</span>
                   </div>
                   <div class="pump-pill">
-                    <span class="pill-label">Est. RPM / Flow</span>
+                    <span class="pill-label">Command Range</span>
                     <span id="pump-cmd-rpm">—</span>
                     <span id="pump-cmd-flow" class="pill-sub">—</span>
                   </div>
@@ -149,9 +187,10 @@
         <section class="pump-section">
           <div class="stat-card">
             <h2>VFD Monitors</h2>
-              <div class="metric-grid vfd-grid">
+            <p class="pump-vfd-note">Percent badges are referenced to 71.7 Hz max, 3.4 A motor FLA, 230 V base, and about 873 W estimated rated electrical input.</p>
+            <div class="metric-grid vfd-grid">
               <div class="metric-block power-block">
-                <span class="metric-label">Input Power</span>
+                <span class="metric-label">VFD Input Power</span>
                 <span id="vfd-power" class="metric-value">—</span>
                 <span id="vfd-power-pct" class="metric-subvalue">—</span>
                 <span id="vfd-power-unit" class="metric-unit">W</span>
@@ -174,6 +213,12 @@
                   <span id="vfd-voltage" class="metric-value">—</span>
                   <span id="vfd-voltage-pct" class="metric-subvalue">—</span>
                   <span id="vfd-voltage-unit" class="metric-unit">V</span>
+                </div>
+                <div class="metric-block">
+                  <span class="metric-label">Est. Rotation Speed</span>
+                  <span id="vfd-speed" class="metric-value">—</span>
+                  <span id="vfd-speed-sub" class="metric-subvalue">—</span>
+                  <span id="vfd-speed-unit" class="metric-unit">rpm</span>
                 </div>
               </div>
             </div>
@@ -203,7 +248,9 @@
         <section class="hero-card">
           <h2>Heat Exchanger</h2>
           <p>
-            Control the LN valve, heaters, and temperature targets for the heat exchanger from this tab.
+            Control the LN valve, heaters, and temperature targets for the heat exchanger from this tab. Be careful with the
+            heaters: they are prone to burning or short-circuiting if left on too long and are not yet protected by breakers.
+            The LN exhaust heater is also not installed yet.
           </p>
         </section>
 
@@ -222,15 +269,31 @@
 
         <section id="controls-section" class="controls-section hx-controls">
           <div class="control-group">
-            <h2>Control Targets</h2>
-            <form id="setpoint-form" class="form-row">
+            <h2>Auto Mode Targets</h2>
+            <form id="auto-control-form" class="form-row" onsubmit="return false">
               <label>
-                Setpoint (°C)
-                <input type="number" id="setpoint-input" step="0.1" inputmode="decimal" value="25.0" />
-                <span class="form-hint">Auto mode uses THI around setpoint minus 5 °C until FLM reaches the setpoint, then switches to FLM hold with fixed hysteresis.</span>
+                HFE Goal (°C)
+                <input type="number" id="hfe-goal-input" step="0.1" inputmode="decimal" value="-110.0" />
+                <span class="form-hint">Close the LN valve once the flow-meter HFE temperature reaches this target. LXe reference temperature: -110 °C.</span>
               </label>
+              <label>
+                HX Limit / THI Limit (°C)
+                <input type="number" id="hx-limit-input" step="0.1" inputmode="decimal" value="-120.0" />
+                <span class="form-hint">Close the LN valve if THI drops below this heat-exchanger protection limit. HFE icing temperature: -120 °C.</span>
+              </label>
+              <label>
+                HX Approach (°C)
+                <input type="number" id="hx-approach-input" step="0.1" min="0" inputmode="decimal" value="10.0" />
+                <span class="form-hint">Reopen the LN valve once THI warms to within this margin of the flow-meter HFE temperature (THI ≥ flow − approach).</span>
+              </label>
+              <label>
+                Hysteresis (°C)
+                <input type="number" id="auto-hysteresis-input" step="0.1" min="0" inputmode="decimal" value="0.5" />
+                <span class="form-hint">Reopen the LN valve only after the flow-meter temperature warms back above the HFE goal by this amount.</span>
+              </label>
+              <p id="auto-mode-status" class="auto-status muted">Awaiting auto-mode telemetry…</p>
               <div class="form-actions">
-                <button type="submit" class="primary">Apply Setpoint</button>
+                <button type="submit" class="primary">Apply Auto Targets</button>
               </div>
             </form>
           </div>

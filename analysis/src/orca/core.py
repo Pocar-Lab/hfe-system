@@ -28,7 +28,7 @@ def load_tc_csv(path: Path | str, *, rename_map: Mapping[str, str] | None = None
     if not csv_path.exists():
         raise FileNotFoundError(csv_path)
 
-    data = pd.read_csv(csv_path)
+    data = pd.read_csv(csv_path, comment="#")
     mapping = dict(TC_MAP)
     if rename_map:
         mapping.update(rename_map)

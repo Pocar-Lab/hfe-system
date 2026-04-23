@@ -2,15 +2,34 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclass_replace
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy.optimize import curve_fit
 
-from .core import apparent_power, integrate_energy, load_tc_csv
+from .cooldown import (
+    SystemModel,
+    ambient_leak_ua_w_per_k,
+    default_system_model,
+    hfe_density_kg_m3,
+    hfe_specific_heat_j_kgk,
+)
+from .core import apparent_power, integrate_energy, load_tc_csv, rolling_slope
+
+
+def _fmt_val_err(val: float, err: float, *, n_sig: int = 4) -> str:
+    """Format 'value ± error': value to n_sig sig figs, error to same decimal places."""
+    import math
+    if not (np.isfinite(val) and np.isfinite(err) and err > 0.0):
+        return f"{val:.{n_sig}g} ± n/a"
+    mag = math.floor(math.log10(abs(val))) if val != 0.0 else 0
+    decimals = max(0, n_sig - 1 - mag)
+    fmt = f"{{:.{decimals}f}}"
+    return f"{fmt.format(val)} ± {fmt.format(err)}"
 
 
 def prepare_dataset(
@@ -157,6 +176,58 @@ class HeatLeakFit:
     ambient_p90_W: float
 
 
+@dataclass(frozen=True)
+class ExponentialHeatLeakFit:
+    """Summary of an exponential ambient-return heat-leak fit."""
+
+    ambient_c: float
+    capacity_j_per_k: float
+    initial_temp_c: float
+    ua_w_per_k: float
+    ua_sigma_w_per_k: float
+    tau_s: float
+    requested_fit_start_min: float
+    fit_start_min: float
+    fit_end_min: float
+    fit_duration_min: float
+    n_samples: int
+    median_pump_input_w: float
+    heat_leak_start_w: float
+    heat_leak_median_w: float
+    heat_leak_end_w: float
+    heat_leak_sigma_w: float
+    residual_std_C: float
+    rmse_C: float
+    r_squared: float
+    fit_time_s: np.ndarray
+    fit_elapsed_s: np.ndarray
+    fit_temperature_C: np.ndarray
+    predicted_temperature_C: np.ndarray
+
+    def predict_temperature_C(self, elapsed_s: Iterable[float]) -> np.ndarray:
+        """Return the fitted temperature for elapsed times measured from fit start."""
+        return _exponential_heat_leak_temperature_model(
+            elapsed_s,
+            self.ua_w_per_k,
+            ambient_c=self.ambient_c,
+            capacity_j_per_k=self.capacity_j_per_k,
+            initial_temp_c=self.initial_temp_c,
+        )
+
+    def predict_heat_leak_W(self, elapsed_s: Iterable[float]) -> np.ndarray:
+        """Return the fitted ambient heat leak for elapsed times measured from fit start."""
+        predicted_temp_C = self.predict_temperature_C(elapsed_s)
+        return self.ua_w_per_k * np.clip(self.ambient_c - predicted_temp_C, 0.0, None)
+
+    def heat_leak_at_temperature_C(self, temperature_c: float) -> float:
+        """Return the fitted heat leak at a specific temperature."""
+        return float(self.ua_w_per_k * max(self.ambient_c - float(temperature_c), 0.0))
+
+    def heat_leak_sigma_at_temperature_C(self, temperature_c: float) -> float:
+        """Return the 1σ uncertainty for the fitted heat leak at a specific temperature."""
+        return float(self.ua_sigma_w_per_k * max(self.ambient_c - float(temperature_c), 0.0))
+
+
 def fit_heat_leak_linear(
     df: pd.DataFrame,
     Cp_JK: float,
@@ -222,6 +293,585 @@ def fit_heat_leak_linear(
         ambient_median_W=float(np.nanmedian(ambient)),
         ambient_p10_W=float(np.nanpercentile(ambient, 10)),
         ambient_p90_W=float(np.nanpercentile(ambient, 90)),
+    )
+
+
+def fit_warmup_segment(
+    df: pd.DataFrame,
+    *,
+    active_hfe_liquid_kg: float,
+    temperature_col: str,
+    time_col: str = "time_s",
+    pump_power_col: str | None = "pump_input_power_w",
+    fit_start_min: float = 0.0,
+    min_samples: int = 10,
+    model: SystemModel | None = None,
+    sigma_mass_kg: float = 0.3,
+    sigma_ambient_c: float = 2.0,
+) -> "ExponentialHeatLeakFit":
+    """
+    Fit an exponential heat-leak model to a warmup segment.
+
+    Combines capacity computation (HFE + steel hardware), ambient reference, and
+    UA seeding from the system model into one call.  ``active_hfe_liquid_kg`` is
+    the recirculating liquid mass; all hardware geometry comes from ``model``
+    (defaults to ``default_system_model()``).
+    """
+    if model is None:
+        model = default_system_model()
+
+    ambient_c = float(model.ambient_temp_k - 273.15)
+    ua_seed = float(ambient_leak_ua_w_per_k(model, use_insulation=True))
+    steel_cp_j_per_k = float(model.steel_mass_kg * model.steel_cp_j_kgk)
+
+    # Loop volume is fixed, so as HFE densifies the circulating mass increases:
+    # m_active(T) = m_room * rho(T) / rho(T_room)
+    rho_room = hfe_density_kg_m3(model.ambient_temp_k)
+    work = df.copy()
+    work["_capacity_j_per_k"] = [
+        active_hfe_liquid_kg * (hfe_density_kg_m3(float(T) + 273.15) / rho_room)
+        * hfe_specific_heat_j_kgk(float(T) + 273.15) + steel_cp_j_per_k
+        for T in work[temperature_col]
+    ]
+
+    _fit_kwargs = dict(
+        temperature_col=temperature_col,
+        capacity_col="_capacity_j_per_k",
+        time_col=time_col,
+        pump_power_col=pump_power_col,
+        fit_start_min=fit_start_min,
+        ua_seed_w_per_k=ua_seed,
+        min_samples=min_samples,
+        use_fm_instrument_sigma=True,
+    )
+    result = fit_heat_leak_exponential(work, ambient_c=ambient_c, **_fit_kwargs)
+
+    # Mass uncertainty: mass is conserved at all temperatures; C_eff = m·c_p(T) + m_steel·c_steel.
+    # τ is constrained by the data shape, so UA = C_eff/τ scales with C_eff.
+    # Only the HFE fraction of C_eff is affected by σ_m (steel mass is exact).
+    hfe_fraction = (result.capacity_j_per_k - steel_cp_j_per_k) / result.capacity_j_per_k
+    sigma_ua_mass = result.ua_w_per_k * hfe_fraction * sigma_mass_kg / active_hfe_liquid_kg
+
+    # T_∞ uncertainty: numerical derivative via a perturbed fit (step = σ/4 for linearity).
+    eps = sigma_ambient_c / 4.0
+    work_pert = work.copy()
+    result_pert = fit_heat_leak_exponential(work_pert, ambient_c=ambient_c + eps, **_fit_kwargs)
+    sigma_ua_tinf = abs(result_pert.ua_w_per_k - result.ua_w_per_k) / eps * sigma_ambient_c
+
+    sigma_ua_total = float(np.sqrt(
+        result.ua_sigma_w_per_k**2 + sigma_ua_mass**2 + sigma_ua_tinf**2
+    ))
+    return dataclass_replace(result, ua_sigma_w_per_k=sigma_ua_total)
+
+
+def plot_warmup_segment_fits(
+    warmup_defs: List[Tuple],
+    df: pd.DataFrame,
+    *,
+    active_hfe_liquid_kg: float,
+    target_cold_temp_c: float = -110.0,
+    temperature_col: str = "temperature_c_si",
+    time_col: str = "time_s",
+    pump_power_col: str | None = "pump_input_power_w",
+    min_samples: int = 10,
+    model: SystemModel | None = None,
+    sigma_mass_kg: float = 0.3,
+    sigma_ambient_c: float = 2.0,
+) -> Tuple["plt.Figure", List[Dict]]:
+    """
+    Fit and plot warmup segments with a summary table.
+
+    ``warmup_defs`` is a list of ``(label, color, description, t_start_s, t_end_s,
+    fit_start_min)`` tuples.  Returns ``(fig, warmup_results)`` where
+    ``warmup_results`` is a list of dicts with keys ``label``, ``color``,
+    ``desc``, ``fit_start_min``, ``seg``, ``fit``.
+    """
+    warmup_results = []
+    for label, color, desc, t_start, t_end, fit_start_min in warmup_defs:
+        seg = df[df[time_col].between(t_start, t_end)].copy().reset_index(drop=True)
+        seg["elapsed_min"] = (seg[time_col] - float(seg[time_col].iloc[0])) / 60.0
+        fit = fit_warmup_segment(
+            seg,
+            active_hfe_liquid_kg=active_hfe_liquid_kg,
+            temperature_col=temperature_col,
+            time_col=time_col,
+            pump_power_col=pump_power_col,
+            fit_start_min=fit_start_min,
+            min_samples=min_samples,
+            model=model,
+            sigma_mass_kg=sigma_mass_kg,
+            sigma_ambient_c=sigma_ambient_c,
+        )
+        warmup_results.append({"label": label, "color": color, "desc": desc,
+                                "fit_start_min": fit_start_min, "seg": seg, "fit": fit})
+
+    x_max_min = max(float(r["seg"]["elapsed_min"].iloc[-1]) for r in warmup_results) * 1.04
+
+    fig = plt.figure(figsize=(12, 9.0))
+    grid = fig.add_gridspec(2, 1, height_ratios=[7.0, 1.6], hspace=0.22)
+    ax = fig.add_subplot(grid[0])
+    table_ax = fig.add_subplot(grid[1])
+    table_ax.axis("off")
+
+    for result in warmup_results:
+        seg, fit, color = result["seg"], result["fit"], result["color"]
+        fit_time_min = fit.fit_start_min + fit.fit_elapsed_s / 60.0
+        fit_curve_elapsed_min = np.linspace(fit.fit_start_min, fit.fit_end_min, 250)
+        fit_curve_temp_c = fit.predict_temperature_C((fit_curve_elapsed_min - fit.fit_start_min) * 60.0)
+        q_w = fit.heat_leak_at_temperature_C(target_cold_temp_c)
+        q_err_w = fit.heat_leak_sigma_at_temperature_C(target_cold_temp_c)
+
+        raw_t = seg["elapsed_min"].to_numpy(float)
+        raw_T = seg[temperature_col].to_numpy(float)
+        sigma_raw = np.sqrt(0.5**2 + (0.005 * (raw_T + 273.15))**2)
+        sigma_model = np.sqrt(0.5**2 + (0.005 * (fit_curve_temp_c + 273.15))**2)
+        ax.fill_between(raw_t, raw_T - sigma_raw, raw_T + sigma_raw, color=color, alpha=0.12)
+        ax.plot(raw_t, raw_T, color=color, alpha=0.25, lw=1.2)
+        ax.plot(fit_time_min, fit.fit_temperature_C, color=color, alpha=0.55, lw=1.2)
+        ax.fill_between(fit_curve_elapsed_min,
+                        fit_curve_temp_c - sigma_model, fit_curve_temp_c + sigma_model,
+                        color=color, alpha=0.18)
+        ax.plot(fit_curve_elapsed_min, fit_curve_temp_c, color=color, lw=2.2, linestyle="--",
+                label=f"{result['label']} ({result['desc']})")
+        ax.axvline(result["fit_start_min"], color=color, lw=0.8, linestyle=":", alpha=0.7)
+
+    ax.text(
+        0.98, 0.97,
+        r"$T(t) = T_\infty + (T_0 - T_\infty)\,e^{-t/\tau}$"
+        "\n"
+        r"$\tau = C_\mathrm{eff} / UA \qquad Q_\mathrm{leak}(T) = UA\,(T_\infty - T)$",
+        transform=ax.transAxes, va="top", ha="right", fontsize=9,
+        bbox=dict(boxstyle="round,pad=0.4", fc="white", ec="0.75", alpha=0.9),
+    )
+    ax.set_xlim(left=0.0, right=x_max_min * 1.10)
+    ax.set_ylim(-60, 20)
+    ax.set_xlabel("Elapsed warmup time [min]")
+    ax.set_ylabel("Flow-meter temperature [°C]")
+    ax.set_title("Heat leaks from warmup segments  —  bypass open")
+    ax.legend(loc="lower right", fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+    table_rows = [
+        [
+            r["label"], r["desc"],
+            f"{r['fit_start_min']:.0f}",
+            _fmt_val_err(r["fit"].ua_w_per_k, r["fit"].ua_sigma_w_per_k),
+            _fmt_val_err(
+                r["fit"].tau_s / 60.0,
+                r["fit"].tau_s / 60.0 * r["fit"].ua_sigma_w_per_k / r["fit"].ua_w_per_k,
+            ),
+            _fmt_val_err(
+                r["fit"].heat_leak_at_temperature_C(target_cold_temp_c),
+                r["fit"].heat_leak_sigma_at_temperature_C(target_cold_temp_c),
+            ),
+        ]
+        for r in warmup_results
+    ]
+    table = table_ax.table(
+        cellText=table_rows,
+        colLabels=["Segment", "Description", "Residual cooling cut (min)",
+                   "UA (W/K)", "τ (min)", f"Q leak @ {target_cold_temp_c:.0f} °C (W)"],
+        cellLoc="left", colLoc="left",
+        bbox=(0.0, 0.02, 1.0, 0.88),
+        colWidths=[0.07, 0.26, 0.17, 0.16, 0.12, 0.22],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(9.1)
+    table.scale(1.0, 1.55)
+    for (row, col), cell in table.get_celld().items():
+        cell.set_edgecolor("0.7")
+        cell.PAD = 0.03
+        if row == 0:
+            cell.set_facecolor("#f2f2f2")
+            cell.set_text_props(weight="bold")
+        else:
+            cell.set_facecolor("white")
+
+    fig.subplots_adjust(left=0.08, right=0.98, top=0.94, bottom=0.04)
+    pos = table_ax.get_position()
+    table_ax.set_position([0.02, pos.y0, 0.96, pos.height])
+
+    return fig, warmup_results
+
+
+def plot_cooldown_power_summary(
+    phase_defs: List[Tuple],
+    *,
+    ua_ambient_w_per_k: float,
+    active_hfe_liquid_kg: float,
+    rolling_window_s: float = 180.0,
+    target_cold_temp_c: float = -110.0,
+    temperature_col: str = "temperature_c_si",
+    tc_mean_col: str | None = "temp_mean_C",
+    time_col: str = "time_s",
+    pump_power_col: str = "pump_input_power_w",
+    pump_cmd_col: str = "pump_cmd_pct",
+    model: SystemModel | None = None,
+) -> Tuple["plt.Figure", pd.DataFrame]:
+    """
+    Compute per-phase cooldown power and produce a plot with summary table.
+
+    ``phase_defs`` is a list of ``(label, color, dataframe)`` tuples where each
+    dataframe covers one phase.  ``ua_ambient_w_per_k`` should come from a
+    warmup exponential fit (e.g. the W3 segment).
+
+    Energy balance:  Q_HX = Q_net + Q_amb + Q_pump
+      Q_net = -C_eff · dT/dt   (net energy removed from inventory)
+      Q_amb = UA · (T_∞ - T)   (ambient heat leaking in)
+
+    Returns ``(fig, phase_power_summary)`` where the DataFrame index matches the
+    phase labels and includes ``cooldown_gross_hx_power_w`` and
+    ``warmup_ambient_heat_leak_est_w`` for downstream cells.
+    """
+    if model is None:
+        model = default_system_model()
+    ambient_c = float(model.ambient_temp_k - 273.15)
+    steel_cp = float(model.steel_mass_kg * model.steel_cp_j_kgk)
+    rho_room = hfe_density_kg_m3(model.ambient_temp_k)
+
+    rows: List[Dict] = []
+    segments: List[Tuple] = []  # (label, color, cooldown_frame, full_work_frame, fit_start_min, desc)
+
+    for phase_def in phase_defs:
+        label, color, df = phase_def[0], phase_def[1], phase_def[2]
+        fit_start_min = float(phase_def[3]) if len(phase_def) > 3 else 0.0
+        desc = str(phase_def[4]) if len(phase_def) > 4 else ""
+        work = df.copy().sort_values(time_col).reset_index(drop=True)
+
+        if tc_mean_col and tc_mean_col in work.columns:
+            bulk = work[tc_mean_col].where(work[tc_mean_col].notna(), work[temperature_col])
+        else:
+            bulk = work[temperature_col].copy()
+        bulk_arr = bulk.to_numpy(float)
+
+        capacity = np.array([
+            active_hfe_liquid_kg * (hfe_density_kg_m3(float(T) + 273.15) / rho_room)
+            * hfe_specific_heat_j_kgk(float(T) + 273.15) + steel_cp
+            for T in bulk_arr
+        ])
+        rate = rolling_slope(work[time_col].to_numpy(float), bulk_arr, rolling_window_s)
+        pump = pd.to_numeric(work[pump_power_col], errors="coerce").clip(lower=0.0).to_numpy(float)
+
+        q_net = -capacity * rate
+        q_amb = ua_ambient_w_per_k * np.clip(ambient_c - bulk_arr, 0.0, None)
+        q_hx = np.clip(q_net + q_amb + pump, 0.0, None)
+
+        work["elapsed_min"] = (work[time_col] - float(work[time_col].iloc[0])) / 60.0
+        work["q_net_w"] = q_net
+        work["q_hx_w"] = q_hx
+
+        turn = int(bulk.idxmin())
+        cd = work.iloc[: turn + 1].copy()
+        segments.append((label, color, cd, work, fit_start_min, desc))
+
+        rows.append({
+            "phase": label,
+            "cooldown_duration_min": float((cd[time_col].iloc[-1] - cd[time_col].iloc[0]) / 60.0) if len(cd) > 1 else float("nan"),
+            "cooldown_rate_c_per_min": float(max(-rate[: turn + 1].mean() * 60.0, 0.0)),
+            "cooldown_q_net_w": float(np.clip(q_net[: turn + 1], 0.0, None).mean()),
+            "cooldown_q_amb_w": float(q_amb[: turn + 1].mean()),
+            "cooldown_gross_hx_power_w": float(q_hx[: turn + 1].mean()),
+            "warmup_ambient_heat_leak_est_w": float(q_amb[turn:].mean()),
+        })
+
+    summary = pd.DataFrame(rows).set_index("phase")
+
+    fig = plt.figure(figsize=(12, 9.0))
+    grid = fig.add_gridspec(2, 1, height_ratios=[6.5, 1.8], hspace=0.28)
+    ax_temp = fig.add_subplot(grid[0])
+    table_ax = fig.add_subplot(grid[1])
+    table_ax.axis("off")
+
+    q_target = float(ua_ambient_w_per_k * max(ambient_c - target_cold_temp_c, 0.0))
+    table_data = []
+    for label, color, cd, work, fit_start_min, desc in segments:
+        T_arr = work[temperature_col].to_numpy(float)
+        t_arr = work["elapsed_min"].to_numpy(float)
+        t_s = work[time_col].to_numpy(float)
+
+        # Full segment: faded raw data + FM error band (pre-fit visual)
+        sigma_full = np.sqrt(0.5**2 + (0.005 * (T_arr + 273.15))**2)
+        ax_temp.fill_between(t_arr, T_arr - sigma_full, T_arr + sigma_full, color=color, alpha=0.08)
+        ax_temp.plot(t_arr, T_arr, color=color, lw=1.2, alpha=0.25)
+
+        # Linear fit — apply start cut
+        fit_mask = t_arr >= fit_start_min
+        t_s_fit = t_s[fit_mask]
+        T_arr_fit = T_arr[fit_mask]
+        t_arr_fit = t_arr[fit_mask]
+        if len(T_arr_fit) < 3:
+            t_s_fit, T_arr_fit, t_arr_fit = t_s, T_arr, t_arr
+        t_c = t_s_fit - t_s_fit.mean()
+        denom = float(np.dot(t_c, t_c))
+        slope_C_per_s = float(np.dot(t_c, T_arr_fit) / denom)
+        intercept = float(T_arr_fit.mean() - slope_C_per_s * t_s_fit.mean())
+        T_fit = slope_C_per_s * t_s_fit + intercept
+        residual_std = float(np.std(T_arr_fit - T_fit, ddof=2)) if len(T_arr_fit) > 2 else float("nan")
+        sigma_slope_C_per_s = residual_std / float(np.sqrt(denom)) if np.isfinite(residual_std) else float("nan")
+
+        # Fit portion: brighter raw data overlay + FM error band
+        sigma_fit = np.sqrt(0.5**2 + (0.005 * (T_arr_fit + 273.15))**2)
+        ax_temp.fill_between(t_arr_fit, T_arr_fit - sigma_fit, T_arr_fit + sigma_fit, color=color, alpha=0.15)
+        ax_temp.plot(t_arr_fit, T_arr_fit, color=color, lw=1.2, alpha=0.55)
+
+        if fit_start_min > 0.0:
+            ax_temp.axvline(fit_start_min, color=color, lw=1.2, linestyle=":", alpha=0.85)
+        ax_temp.fill_between(t_arr_fit, T_fit - residual_std, T_fit + residual_std,
+                             color=color, alpha=0.25)
+        ax_temp.plot(t_arr_fit, T_fit, color=color, lw=2.0, linestyle="--")
+
+        # Q_HX at target temperature
+        C_eff_target = (
+            active_hfe_liquid_kg * (hfe_density_kg_m3(target_cold_temp_c + 273.15) / rho_room)
+            * hfe_specific_heat_j_kgk(target_cold_temp_c + 273.15) + steel_cp
+        )
+        q_net_target = float(C_eff_target * abs(slope_C_per_s))
+        q_hx_target = q_net_target + q_target
+        sigma_q_hx_target = float(C_eff_target * sigma_slope_C_per_s)
+
+        # HX UA from average operating point of fit window
+        T_LN2_C = -196.0
+        T_avg_fit = float(T_arr_fit.mean())
+        C_eff_avg = float(np.mean([
+            active_hfe_liquid_kg * (hfe_density_kg_m3(float(T) + 273.15) / rho_room)
+            * hfe_specific_heat_j_kgk(float(T) + 273.15) + steel_cp
+            for T in T_arr_fit
+        ]))
+        q_net_avg = float(C_eff_avg * abs(slope_C_per_s))
+        q_amb_avg = float(ua_ambient_w_per_k * max(ambient_c - T_avg_fit, 0.0))
+        q_hx_avg = q_net_avg + q_amb_avg
+        delta_T_hx = max(T_avg_fit - T_LN2_C, 1.0)
+        ua_hx = q_hx_avg / delta_T_hx
+        sigma_ua_hx = float(C_eff_avg * sigma_slope_C_per_s) / delta_T_hx
+
+        slope_C_per_min = slope_C_per_s * 60.0
+        sigma_slope_C_per_min = sigma_slope_C_per_s * 60.0
+
+        table_data.append([
+            label,
+            desc,
+            f"{fit_start_min:.1f}",
+            _fmt_val_err(slope_C_per_min, sigma_slope_C_per_min),
+            _fmt_val_err(ua_hx, sigma_ua_hx),
+            _fmt_val_err(q_hx_target, sigma_q_hx_target),
+        ])
+
+    ax_temp.text(
+        0.98, 0.97,
+        r"$Q_\mathrm{HX} = C_\mathrm{eff}\,|\dot{T}| + UA_\mathrm{leak}\,(T_\infty - \bar{T})$"
+        "\n"
+        r"$UA_\mathrm{HX} = Q_\mathrm{HX}\,/\,({\bar{T}} - T_\mathrm{LN_2})$"
+        rf"$\quad T_{{\mathrm{{LN_2}}}} = {-196.0:.0f}\,°C$"
+        "\n"
+        rf"$UA_{{\mathrm{{leak}}}} = {ua_ambient_w_per_k:.3f}$ W/K  (warmup calibration)",
+        transform=ax_temp.transAxes, va="top", ha="right", fontsize=9,
+        bbox=dict(boxstyle="round,pad=0.4", fc="white", ec="0.75", alpha=0.9),
+    )
+    ax_temp.set_xlabel("Elapsed phase time [min]")
+    ax_temp.set_ylabel("Flow-meter temperature [°C]")
+    ax_temp.set_title("Cooldown segments — temperature and linear fit")
+    from matplotlib.lines import Line2D
+    seg_handles = [
+        Line2D([0], [0], color=color, lw=1.5, label=f"{label} ({desc})" if desc else label)
+        for label, color, _cd, _work, _fs, desc in segments
+    ]
+    ax_temp.legend(handles=seg_handles, loc="center right", fontsize=9)
+    ax_temp.grid(True, which="major", alpha=0.35)
+    ax_temp.minorticks_on()
+    ax_temp.grid(True, which="minor", alpha=0.15)
+
+    table = table_ax.table(
+        cellText=table_data,
+        colLabels=["Phase", "Description", "Fit start (min)", "dT/dt (°C/min)",
+                   "HX UA (W/K)", f"Q_HX @ {target_cold_temp_c:.0f}°C (W)"],
+        cellLoc="left", colLoc="left",
+        bbox=(0.0, 0.02, 1.0, 0.88),
+        colWidths=[0.07, 0.28, 0.11, 0.22, 0.16, 0.22],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(9.1)
+    table.scale(1.0, 1.55)
+    for (row, col), cell in table.get_celld().items():
+        cell.set_edgecolor("0.7")
+        cell.PAD = 0.03
+        if row == 0:
+            cell.set_facecolor("#f2f2f2")
+            cell.set_text_props(weight="bold")
+        else:
+            cell.set_facecolor("white")
+
+    fig.subplots_adjust(left=0.08, right=0.98, top=0.94, bottom=0.04)
+    pos = table_ax.get_position()
+    table_ax.set_position([0.02, pos.y0, 0.96, pos.height])
+
+    return fig, summary
+
+
+def _exponential_heat_leak_temperature_model(
+    elapsed_s: Iterable[float],
+    ua_w_per_k: float,
+    *,
+    ambient_c: float,
+    capacity_j_per_k: float,
+    initial_temp_c: float,
+) -> np.ndarray:
+    """Return the ambient-return temperature model for a warmup segment."""
+    elapsed = np.asarray(list(elapsed_s), dtype=float)
+    ua = max(float(ua_w_per_k), 1e-9)
+    capacity = max(float(capacity_j_per_k), 1e-9)
+    return ambient_c - (ambient_c - initial_temp_c) * np.exp(-elapsed * ua / capacity)
+
+
+def fit_heat_leak_exponential(
+    df: pd.DataFrame,
+    *,
+    ambient_c: float,
+    temperature_col: str,
+    capacity_col: str,
+    time_col: str = "time_s",
+    pump_power_col: str | None = "pump_input_power_w",
+    fit_start_min: float = 0.0,
+    ua_seed_w_per_k: float = 1.0,
+    max_ua_w_per_k: float = 20.0,
+    min_samples: int = 10,
+    use_fm_instrument_sigma: bool = False,
+) -> ExponentialHeatLeakFit:
+    """
+    Fit an exponential ambient-return model to a warmup segment.
+
+    Parameters
+    ----------
+    df:
+        Dataframe containing a single warmup segment.
+    ambient_c:
+        Ambient reference temperature in degC.
+    temperature_col:
+        Column containing the temperature to fit.
+    capacity_col:
+        Column containing the effective thermal capacity [J/K].
+    time_col:
+        Timestamp column in seconds.
+    pump_power_col:
+        Optional pump-input column kept for reporting context.
+    fit_start_min:
+        Requested fit start, relative to the beginning of ``df``, in minutes.
+    ua_seed_w_per_k:
+        Initial guess for the fitted UA.
+    max_ua_w_per_k:
+        Upper fit bound for the UA parameter.
+    min_samples:
+        Minimum number of fit samples required.
+    """
+    required_columns = [time_col, temperature_col, capacity_col]
+    missing_columns = [column for column in required_columns if column not in df.columns]
+    if missing_columns:
+        missing = ", ".join(repr(column) for column in missing_columns)
+        raise ValueError(f"Missing required columns for exponential heat-leak fit: {missing}.")
+
+    ordered = (
+        df.copy()
+        .replace([np.inf, -np.inf], np.nan)
+        .dropna(subset=required_columns)
+        .sort_values(time_col)
+        .reset_index(drop=True)
+    )
+    if ordered.empty:
+        raise ValueError("No valid samples are available for the exponential heat-leak fit.")
+
+    segment_start_time_s = float(ordered[time_col].iloc[0])
+    ordered["elapsed_min"] = (ordered[time_col] - segment_start_time_s) / 60.0
+    fit_subset = ordered[ordered["elapsed_min"] >= float(fit_start_min)].copy().reset_index(drop=True)
+    if fit_subset.shape[0] < min_samples:
+        raise ValueError(
+            "Insufficient samples remain after the requested fit start; "
+            f"need at least {min_samples}, found {fit_subset.shape[0]}."
+        )
+
+    capacity_j_per_k = float(np.nanmean(fit_subset[capacity_col]))
+    if not np.isfinite(capacity_j_per_k) or capacity_j_per_k <= 0.0:
+        raise ValueError("A positive finite effective heat capacity is required for the fit.")
+
+    fit_time_s = fit_subset[time_col].to_numpy(dtype=float)
+    fit_elapsed_s = fit_time_s - float(fit_time_s[0])
+    fit_temperature_C = fit_subset[temperature_col].to_numpy(dtype=float)
+    initial_temp_c = float(fit_temperature_C[0])
+
+    median_pump_input_w = float("nan")
+    if pump_power_col is not None and pump_power_col in fit_subset.columns:
+        pump_series = pd.to_numeric(fit_subset[pump_power_col], errors="coerce")
+        if pump_series.notna().any():
+            median_pump_input_w = float(pump_series.median())
+
+    # OPTIMASS 6000 spec: ±0.5 °C ± 0.5% of reading (K); computed from actual fit temps
+    fit_sigma = (
+        np.sqrt(0.5**2 + (0.005 * (fit_temperature_C + 273.15))**2)
+        if use_fm_instrument_sigma else None
+    )
+
+    params, covariance = curve_fit(
+        lambda elapsed_s, ua_w_per_k: _exponential_heat_leak_temperature_model(
+            elapsed_s,
+            ua_w_per_k,
+            ambient_c=ambient_c,
+            capacity_j_per_k=capacity_j_per_k,
+            initial_temp_c=initial_temp_c,
+        ),
+        fit_elapsed_s,
+        fit_temperature_C,
+        p0=[max(float(ua_seed_w_per_k), 1e-6)],
+        bounds=([1e-6], [max(float(max_ua_w_per_k), 1e-6)]),
+        sigma=fit_sigma,
+        absolute_sigma=True,
+        maxfev=20_000,
+    )
+
+    ua_w_per_k = float(params[0])
+    if np.ndim(covariance) == 2 and covariance.shape == (1, 1):
+        ua_sigma_w_per_k = float(np.sqrt(np.clip(covariance[0, 0], 0.0, None)))
+    else:
+        ua_sigma_w_per_k = float("nan")
+
+    predicted_temperature_C = _exponential_heat_leak_temperature_model(
+        fit_elapsed_s,
+        ua_w_per_k,
+        ambient_c=ambient_c,
+        capacity_j_per_k=capacity_j_per_k,
+        initial_temp_c=initial_temp_c,
+    )
+    heat_leak_W = ua_w_per_k * np.clip(ambient_c - predicted_temperature_C, 0.0, None)
+    residuals_C = fit_temperature_C - predicted_temperature_C
+    ss_res = float(np.dot(residuals_C, residuals_C))
+    ss_tot = float(np.dot(fit_temperature_C - fit_temperature_C.mean(), fit_temperature_C - fit_temperature_C.mean()))
+    rmse_C = float(np.sqrt(np.mean(residuals_C**2)))
+    residual_std_C = float(np.sqrt(ss_res / max(fit_subset.shape[0] - 1, 1)))
+    r_squared = float(1.0 - ss_res / ss_tot) if ss_tot > 0.0 else float("nan")
+    fit_time_min = (fit_time_s - segment_start_time_s) / 60.0
+    fit_temp_median_c = float(np.nanmedian(predicted_temperature_C))
+
+    return ExponentialHeatLeakFit(
+        ambient_c=float(ambient_c),
+        capacity_j_per_k=capacity_j_per_k,
+        initial_temp_c=initial_temp_c,
+        ua_w_per_k=ua_w_per_k,
+        ua_sigma_w_per_k=ua_sigma_w_per_k,
+        tau_s=float(capacity_j_per_k / ua_w_per_k),
+        requested_fit_start_min=float(fit_start_min),
+        fit_start_min=float(fit_time_min[0]),
+        fit_end_min=float(fit_time_min[-1]),
+        fit_duration_min=float(fit_time_min[-1] - fit_time_min[0]),
+        n_samples=int(fit_subset.shape[0]),
+        median_pump_input_w=median_pump_input_w,
+        heat_leak_start_w=float(heat_leak_W[0]),
+        heat_leak_median_w=float(np.nanmedian(heat_leak_W)),
+        heat_leak_end_w=float(heat_leak_W[-1]),
+        heat_leak_sigma_w=float(max(ambient_c - fit_temp_median_c, 0.0) * ua_sigma_w_per_k),
+        residual_std_C=residual_std_C,
+        rmse_C=rmse_C,
+        r_squared=r_squared,
+        fit_time_s=fit_time_s,
+        fit_elapsed_s=fit_elapsed_s,
+        fit_temperature_C=fit_temperature_C,
+        predicted_temperature_C=predicted_temperature_C,
     )
 
 

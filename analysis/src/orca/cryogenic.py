@@ -109,7 +109,7 @@ def prepare_cryogenic_dip_study(
     """Load a static cryogenic dip log and derive smoothed rates plus phase labels."""
 
     log_path = Path(path)
-    data = canonicalize_tc_columns(pd.read_csv(log_path))
+    data = canonicalize_tc_columns(pd.read_csv(log_path, comment="#"))
     if probe_column not in data.columns:
         raise ValueError(f"Probe column {probe_column!r} not found in {log_path}.")
 

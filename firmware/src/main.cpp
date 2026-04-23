@@ -3,6 +3,7 @@
 #include <Adafruit_MAX31856.h>
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 // ── Shared software-SPI pins ─────────────────────────────────────────────
 constexpr int SCK_PIN  = 8;   // CLK
@@ -11,6 +12,20 @@ constexpr int MISO_PIN = 22;  // DO  (MAX31856 -> MCU)
 
 // ── CS pins for U0..U9 (U9 on D48) ───────────────────────────────────────
 constexpr uint8_t CS_PINS[] = { 9, 3, 23, 31, 39, 47, 30, 38, 46, 48 };
+// Installed probes are T-type everywhere except the HX probes on U8/U9.
+// Leave unused channels on the default K-type unless/until wiring is assigned.
+constexpr max31856_thermocoupletype_t TC_TYPES[] = {
+  MAX31856_TCTYPE_K, // U0 (unused)
+  MAX31856_TCTYPE_K, // U1 (unused)
+  MAX31856_TCTYPE_T, // U2 / TTEST
+  MAX31856_TCTYPE_T, // U3 / TFO
+  MAX31856_TCTYPE_T, // U4 / TTI
+  MAX31856_TCTYPE_K, // U5 (unused)
+  MAX31856_TCTYPE_T, // U6 / TTO
+  MAX31856_TCTYPE_T, // U7 / TMI
+  MAX31856_TCTYPE_K, // U8 / THI
+  MAX31856_TCTYPE_K, // U9 / THM
+};
 constexpr size_t  NUM_TCS   = sizeof(CS_PINS) / sizeof(CS_PINS[0]);
 
 // ── Always emit 10 columns: temp0_C .. temp9_C ───────────────────────────
@@ -28,12 +43,16 @@ constexpr uint8_t  PWM_PIN           = 6;       // OC4A on Arduino Mega
 constexpr uint16_t PWM_TOP           = 999;     // 2 kHz with prescaler 8
 constexpr float    PUMP_CMD_MAX_PCT  = 100.0f;  // clamp analog command to 0–100 % of full scale
 constexpr float    PUMP_MAX_FREQ_HZ  = 71.7f;   // 100% -> 71.7 Hz (≈2150 rpm, ≈4.0 L/min HFE)
-constexpr float    VFD_RATED_CURRENT_A = 2.8f;  // inverter rated current / motor nameplate
-constexpr float    VFD_RATED_POWER_W = 400.0f;  // motor rated output power (W) for %→W, update to nameplate
+constexpr float    VFD_RATED_CURRENT_A = 3.4f;  // motor nameplate FLA at 230 V
+constexpr float    VFD_RATED_OUTPUT_POWER_W = 746.0f; // 1 HP motor output
+constexpr float    MOTOR_NAMEPLATE_EFFICIENCY = 0.855f;
+constexpr float    VFD_EST_RATED_INPUT_POWER_W =
+    VFD_RATED_OUTPUT_POWER_W / MOTOR_NAMEPLATE_EFFICIENCY;
 constexpr float    VFD_BASE_VOLTAGE  = 230.0f;  // nominal output voltage for % display
+constexpr float    MOTOR_EST_RPM_PER_HZ = 30.0f; // 4-pole motor estimate; actual shaft RPM is slightly lower under load
 constexpr uint8_t  VFD_SLAVE_ADDR    = 1;       // y01
 constexpr uint32_t VFD_BAUD          = 9600;    // y04
-constexpr unsigned long VFD_POLL_MS  = 1000UL;  // poll M09–M12 once per second
+constexpr unsigned long VFD_POLL_MS  = 1000UL;  // poll VFD monitor registers once per second
 
 // ── Flow meter (KROHNE MFC400 via DFR0845 on Serial2) ───────────────────
 // MFC400 Modbus supplement (ER 1.0) maps 30000..30008 as five float input registers:
@@ -45,6 +64,7 @@ constexpr uint16_t FLOW_REG_START    = 30000;   // 30000..30008, five floats
 constexpr uint8_t  FLOW_REG_COUNT    = 10;      // 10 x 16-bit regs = 5 x float32
 constexpr float    FLUID_CONC_PCT    = 100.0f;
 constexpr char     FLUID_NAME[]      = "HFE-7200";
+constexpr char     FLOW_TEMPERATURE_UNIT[] = "fahrenheit";
 
 // ── Pressure sensors (0–5.013 V = 10 bar gauge) ─────────────────────────
 // IMPORTANT: these must be analog-capable pins (A0–A15 on the Mega). If you move the wiring,
@@ -65,20 +85,32 @@ constexpr float   PUMP_DELTA_P_ESTOP_BAR = 5.0f;  // emergency-stop threshold fo
 constexpr uint16_t REG_M09 = 0x0809;  // output frequency (0.01 Hz)
 constexpr uint8_t  N_M_REG = 4;       // M09–M12 inclusive
 
+// Modbus group W registers (Fuji FRENIC-Mini Monitor 2)
+constexpr uint16_t REG_W05 = 0x0F05;  // output current (RTU format [19], engineering units)
+constexpr uint16_t REG_W21 = 0x0F15;  // input power   (RTU format [24], engineering units)
+constexpr uint8_t  N_W_DRIVE_REG = 2; // W05–W06 inclusive
+
 // ── Control parameters ───────────────────────────────────────────────────
-constexpr float DEFAULT_SETPOINT_C   = 25.0f;  // °C
-constexpr float LN_AUTO_HYSTERESIS_C = 0.5f;   // °C
-constexpr float LN_AUTO_THI_OFFSET_C = 5.0f;   // °C below setpoint for THI guard
-constexpr size_t THI_SENSOR_INDEX    = 9;      // U9 = THI
+constexpr float DEFAULT_HFE_GOAL_C           = -110.0f; // °C, LXe reference temperature
+constexpr float DEFAULT_HX_LIMIT_C           = -120.0f; // °C, HFE icing guard at THI
+constexpr float DEFAULT_LN_AUTO_HYSTERESIS_C = 0.5f;    // °C, flow-goal reopen margin
+constexpr float DEFAULT_HX_APPROACH_C        = 10.0f;   // °C, THI reopen margin below flow_temp
+constexpr size_t THI_SENSOR_INDEX            = 8;       // U8 = THI
 
 // ── Valve/override state ─────────────────────────────────────────────────
 enum ValveState   : uint8_t { CLOSED = 0, OPEN = 1 };
 enum OverrideMode : uint8_t { AUTO = 0, FORCE_OPEN = 1, FORCE_CLOSE = 2 };
 
+constexpr OverrideMode DEFAULT_VALVE_MODE = FORCE_CLOSE;
+
 static ValveState   g_valve = CLOSED;
-static OverrideMode g_mode  = AUTO;
-static float        g_setpoint_c = DEFAULT_SETPOINT_C;
-static bool         g_ln_auto_flow_target_reached = false;
+static OverrideMode g_mode  = DEFAULT_VALVE_MODE;
+static float        g_hfe_goal_c = DEFAULT_HFE_GOAL_C;
+static float        g_hx_limit_c = DEFAULT_HX_LIMIT_C;
+static float        g_ln_auto_hysteresis_c = DEFAULT_LN_AUTO_HYSTERESIS_C;
+static float        g_hx_approach_c = DEFAULT_HX_APPROACH_C;
+static bool         g_auto_close_latched = false;
+static bool         g_auto_status_sampled = false;
 static bool         g_heater_bottom_on = false;
 static bool         g_heater_exhaust_on = false;
 
@@ -100,11 +132,15 @@ struct VfdSnapshot {
   float  freqHz;
   float  inputPowerPct;
   float  outputCurrentPct;
+  float  rotationSpeedRpm;
+  float  inputPowerKw;
+  float  inputPowerW;
+  float  outputCurrentA;
   float  outputVoltageV;
   unsigned long lastPollMs;
 };
 
-static VfdSnapshot g_vfd = { false, NAN, NAN, NAN, NAN, 0 };
+static VfdSnapshot g_vfd = { false, NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN, 0 };
 static float       g_pump_cmd_pct = 0.0f;
 
 struct FlowSnapshot {
@@ -118,6 +154,42 @@ struct FlowSnapshot {
 };
 
 static FlowSnapshot g_flow = { false, NAN, NAN, NAN, NAN, NAN, 0 };
+
+enum AutoCloseReason : uint8_t {
+  AUTO_CLOSE_NONE = 0,
+  AUTO_CLOSE_MISSING_THI,
+  AUTO_CLOSE_MISSING_FLOW_TEMP,
+  AUTO_CLOSE_THI_LIMIT,
+  AUTO_CLOSE_FLOW_GOAL,
+};
+
+struct AutoValveStatus {
+  bool thiValid;
+  bool flowValid;
+  bool closeRequested;
+  bool readyToOpen;
+  AutoCloseReason reason;
+  float thiTempC;
+  float flowTempC;
+  float thiCloseThresholdC;
+  float flowCloseThresholdC;
+  float thiReopenThresholdC;
+  float flowReopenThresholdC;
+};
+
+static AutoValveStatus g_auto_status = {
+  false,
+  false,
+  true,
+  false,
+  AUTO_CLOSE_MISSING_THI,
+  NAN,
+  NAN,
+  DEFAULT_HX_LIMIT_C,
+  DEFAULT_HFE_GOAL_C,
+  NAN,  // thiReopenThresholdC resolves from flow_temp at runtime
+  DEFAULT_HFE_GOAL_C + DEFAULT_LN_AUTO_HYSTERESIS_C,
+};
 
 enum SafetyLawIndex : uint8_t {
   SAFETY_LAW_PUMP_DELTA_P_HIGH = 0,
@@ -323,15 +395,15 @@ static float regsToFloatBE(const uint16_t *regs) {
 }
 
 // Read N_M_REG contiguous registers starting at M09 (FC=0x03)
-static bool vfdReadM09toM12(uint16_t *vals) {
+static bool vfdReadHoldingRegs(uint16_t startReg, uint8_t regCount, uint16_t *vals) {
   uint8_t frame[8];
 
   frame[0] = VFD_SLAVE_ADDR;
   frame[1] = 0x03;             // Read Holding Registers
-  frame[2] = REG_M09 >> 8;     // 0x08
-  frame[3] = REG_M09 & 0xFF;   // 0x09
+  frame[2] = startReg >> 8;
+  frame[3] = startReg & 0xFF;
   frame[4] = 0x00;
-  frame[5] = N_M_REG;          // 4 registers: M09..M12
+  frame[5] = regCount;
 
   uint16_t crc = modbusCRC(frame, 6);
   frame[6] = crc & 0xFF;
@@ -343,7 +415,7 @@ static bool vfdReadM09toM12(uint16_t *vals) {
   VFD.flush();
 
   // Expected reply: addr, func, byteCount (=2*N), data(2*N), CRC(2)
-  const uint8_t expectedLen = 3 + 2 * N_M_REG + 2; // 13 bytes
+  const uint8_t expectedLen = 3 + 2 * regCount + 2;
   uint8_t buf[32];
   uint8_t len = 0;
   unsigned long start = millis();
@@ -369,11 +441,11 @@ static bool vfdReadM09toM12(uint16_t *vals) {
   }
 
   uint8_t byteCount = buf[2];
-  if (byteCount != 2 * N_M_REG) {
+  if (byteCount != 2 * regCount) {
     return false;
   }
 
-  for (uint8_t i = 0; i < N_M_REG; ++i) {
+  for (uint8_t i = 0; i < regCount; ++i) {
     uint8_t hi = buf[3 + 2 * i];
     uint8_t lo = buf[4 + 2 * i];
     vals[i] = ((uint16_t)hi << 8) | lo;
@@ -382,24 +454,91 @@ static bool vfdReadM09toM12(uint16_t *vals) {
   return true;
 }
 
+// Read N_M_REG contiguous registers starting at M09 (FC=0x03)
+static bool vfdReadM09toM12(uint16_t *vals) {
+  return vfdReadHoldingRegs(REG_M09, N_M_REG, vals);
+}
+
+// RTU data format [19]: current value in engineering units.
+// For the small FRENIC-Mini used here, the minimum step is 0.01 A.
+static float vfdDecodeFormat19CurrentA(uint16_t raw) {
+  return raw / 100.0f;
+}
+
+// RTU data format [24]: 2-bit exponent + 14-bit mantissa floating point.
+// Exponent 0..3 maps to decimal shifts of 10^-2, 10^-1, 10^0, 10^1.
+static float vfdDecodeFormat24(uint16_t raw) {
+  const uint16_t exponent = (raw >> 14) & 0x0003;
+  const uint16_t mantissa = raw & 0x3FFF;
+  if (mantissa == 0) return 0.0f;
+
+  float value = static_cast<float>(mantissa);
+  switch (exponent) {
+    case 0: return value * 0.01f;
+    case 1: return value * 0.1f;
+    case 2: return value;
+    default: return value * 10.0f;
+  }
+}
+
 static bool pollVfd() {
-  uint16_t vals[N_M_REG];
-  const bool ok = vfdReadM09toM12(vals);
+  uint16_t mVals[N_M_REG];
+  uint16_t wDriveVals[N_W_DRIVE_REG];
+  uint16_t wPowerVal[1];
+
+  const bool okM = vfdReadM09toM12(mVals);
+  const bool okWDrive = vfdReadHoldingRegs(REG_W05, N_W_DRIVE_REG, wDriveVals);
+  const bool okWPower = vfdReadHoldingRegs(REG_W21, 1, wPowerVal);
+
   g_vfd.lastPollMs = millis();
-  if (!ok) {
-    g_vfd.valid = false;
-    g_vfd.freqHz = NAN;
-    g_vfd.inputPowerPct = NAN;
-    g_vfd.outputCurrentPct = NAN;
-    g_vfd.outputVoltageV = NAN;
+
+  g_vfd.valid = okM || okWDrive || okWPower;
+  g_vfd.freqHz = NAN;
+  g_vfd.inputPowerPct = NAN;
+  g_vfd.outputCurrentPct = NAN;
+  g_vfd.rotationSpeedRpm = NAN;
+  g_vfd.inputPowerKw = NAN;
+  g_vfd.inputPowerW = NAN;
+  g_vfd.outputCurrentA = NAN;
+  g_vfd.outputVoltageV = NAN;
+
+  if (!g_vfd.valid) {
     return false;
   }
 
-  g_vfd.valid = true;
-  g_vfd.freqHz          = vals[0] / 100.0f;  // 0.01 Hz units
-  g_vfd.inputPowerPct   = vals[1] / 100.0f;  // 0.01 %
-  g_vfd.outputCurrentPct= vals[2] / 100.0f;  // 0.01 % of inverter rated current
-  g_vfd.outputVoltageV  = vals[3] * 0.1f;    // 0.1 V units
+  if (okM) {
+    g_vfd.freqHz           = mVals[0] / 100.0f;  // M09, 0.01 Hz units
+    g_vfd.inputPowerPct    = mVals[1] / 100.0f;  // M10, 0.01 % of nominal applicable motor output
+    g_vfd.outputCurrentPct = mVals[2] / 100.0f;  // M11, 0.01 % of inverter rated current
+    if (!okWDrive) {
+      g_vfd.outputVoltageV = mVals[3] * 0.1f;    // M12, 0.1 V representation
+    }
+    if (MOTOR_EST_RPM_PER_HZ > 0.0f) {
+      g_vfd.rotationSpeedRpm = g_vfd.freqHz * MOTOR_EST_RPM_PER_HZ;
+    }
+  }
+
+  if (okWDrive) {
+    g_vfd.outputCurrentA = vfdDecodeFormat19CurrentA(wDriveVals[0]); // W05
+    g_vfd.outputVoltageV = wDriveVals[1] * 0.1f;                     // W06, format [3]
+    if (!okM && VFD_RATED_CURRENT_A > 0.0f) {
+      g_vfd.outputCurrentPct = g_vfd.outputCurrentA / VFD_RATED_CURRENT_A * 100.0f;
+    }
+  } else if (okM && VFD_RATED_CURRENT_A > 0.0f) {
+    g_vfd.outputCurrentA = g_vfd.outputCurrentPct * 0.01f * VFD_RATED_CURRENT_A;
+  }
+
+  if (okWPower) {
+    g_vfd.inputPowerKw = vfdDecodeFormat24(wPowerVal[0]);    // W21
+    g_vfd.inputPowerW = g_vfd.inputPowerKw * 1000.0f;
+    if (!okM && VFD_EST_RATED_INPUT_POWER_W > 0.0f) {
+      g_vfd.inputPowerPct = g_vfd.inputPowerW / VFD_EST_RATED_INPUT_POWER_W * 100.0f;
+    }
+  } else if (okM && VFD_RATED_OUTPUT_POWER_W > 0.0f) {
+    g_vfd.inputPowerW = g_vfd.inputPowerPct * 0.01f * VFD_RATED_OUTPUT_POWER_W;
+    g_vfd.inputPowerKw = g_vfd.inputPowerW / 1000.0f;
+  }
+
   return true;
 }
 
@@ -499,54 +638,150 @@ static bool tryParseFloat(const String& text, float *out) {
   return true;
 }
 
-static float flowTemperatureToC(float rawTemp) {
-  if (!isfinite(rawTemp)) return NAN;
-  // MFC400 temperature register is configured in Kelvin on this system. Keep a small
-  // heuristic so we do not corrupt values if the instrument is already sending °C.
-  return (rawTemp > 200.0f) ? (rawTemp - 273.15f) : rawTemp;
+static bool parseFloatSuffix(const String& cmd, size_t prefixLen, float *out) {
+  if (!out) return false;
+  String rest = cmd.substring(prefixLen);
+  rest.trim();
+  return tryParseFloat(rest, out);
 }
 
-static void runAutoValveControl(const float temps[], size_t count) {
+static bool parseFloatArgs(const String& cmd, size_t prefixLen, float values[], size_t count) {
+  if (!values || count == 0) return false;
+  String rest = cmd.substring(prefixLen);
+  rest.trim();
+  if (!rest.length() || rest.length() >= 80) return false;
+
+  char buf[80];
+  rest.toCharArray(buf, sizeof(buf));
+  char *cursor = buf;
+
+  for (size_t i = 0; i < count; ++i) {
+    while (*cursor == ' ' || *cursor == '\t' || *cursor == ',') ++cursor;
+    if (*cursor == '\0') return false;
+
+    char *endPtr = nullptr;
+    const double value = strtod(cursor, &endPtr);
+    if (endPtr == cursor || !isfinite(value)) return false;
+    values[i] = static_cast<float>(value);
+    cursor = endPtr;
+  }
+
+  while (*cursor == ' ' || *cursor == '\t' || *cursor == ',') ++cursor;
+  return *cursor == '\0';
+}
+
+static float flowTemperatureToC(float rawTemp) {
+  if (!isfinite(rawTemp)) return NAN;
+  if (strcmp(FLOW_TEMPERATURE_UNIT, "fahrenheit") == 0) {
+    return (rawTemp - 32.0f) * (5.0f / 9.0f);
+  }
+  if (strcmp(FLOW_TEMPERATURE_UNIT, "kelvin") == 0) {
+    return rawTemp - 273.15f;
+  }
+  return rawTemp;
+}
+
+static const char* autoCloseReasonKey(AutoCloseReason reason) {
+  switch (reason) {
+    case AUTO_CLOSE_MISSING_THI: return "missing_thi";
+    case AUTO_CLOSE_MISSING_FLOW_TEMP: return "missing_flow_temp";
+    case AUTO_CLOSE_THI_LIMIT: return "thi_limit";
+    case AUTO_CLOSE_FLOW_GOAL: return "flow_goal";
+    default: return "none";
+  }
+}
+
+static void updateAutoValveStatusFromValues(float thiTemp, float flowTempC) {
+  g_auto_status.thiTempC = thiTemp;
+  g_auto_status.flowTempC = flowTempC;
+  g_auto_status.thiValid = isfinite(thiTemp);
+  g_auto_status.flowValid = isfinite(flowTempC);
+  g_auto_status.thiCloseThresholdC = g_hx_limit_c;
+  g_auto_status.flowCloseThresholdC = g_hfe_goal_c;
+  // THI reopens when it approaches flow_temp within g_hx_approach_c; flow reopen keeps hysteresis.
+  g_auto_status.thiReopenThresholdC = isfinite(flowTempC) ? (flowTempC - g_hx_approach_c) : NAN;
+  g_auto_status.flowReopenThresholdC = g_hfe_goal_c + g_ln_auto_hysteresis_c;
+  g_auto_status.closeRequested = false;
+  g_auto_status.readyToOpen = false;
+  g_auto_status.reason = AUTO_CLOSE_NONE;
+
+  if (!g_auto_status.thiValid) {
+    g_auto_status.closeRequested = true;
+    g_auto_status.reason = AUTO_CLOSE_MISSING_THI;
+    return;
+  }
+
+  if (!g_auto_status.flowValid) {
+    g_auto_status.closeRequested = true;
+    g_auto_status.reason = AUTO_CLOSE_MISSING_FLOW_TEMP;
+    return;
+  }
+
+  if (thiTemp <= g_hx_limit_c) {
+    g_auto_status.closeRequested = true;
+    g_auto_status.reason = AUTO_CLOSE_THI_LIMIT;
+    return;
+  }
+
+  if (flowTempC <= g_hfe_goal_c) {
+    g_auto_status.closeRequested = true;
+    g_auto_status.reason = AUTO_CLOSE_FLOW_GOAL;
+    return;
+  }
+
+  g_auto_status.readyToOpen =
+    isfinite(g_auto_status.thiReopenThresholdC) &&
+    thiTemp >= g_auto_status.thiReopenThresholdC &&
+    flowTempC >= g_auto_status.flowReopenThresholdC;
+}
+
+static void updateAutoValveStatus(const float temps[], size_t count) {
   const float thiTemp =
     (temps && count > THI_SENSOR_INDEX && isfinite(temps[THI_SENSOR_INDEX]))
       ? temps[THI_SENSOR_INDEX]
       : NAN;
   const float flowTempC = g_flow.valid ? flowTemperatureToC(g_flow.temperatureRaw) : NAN;
 
-  // First stage: protect the HX inlet (THI) around setpoint - 5 °C until the flow meter
-  // temperature reaches the operator setpoint. After that we switch to FLM-based hold mode.
-  if (isfinite(flowTempC) && flowTempC <= g_setpoint_c) {
-    g_ln_auto_flow_target_reached = true;
-  }
+  updateAutoValveStatusFromValues(thiTemp, flowTempC);
+  g_auto_status_sampled = true;
+}
 
-  if (g_ln_auto_flow_target_reached) {
-    if (!isfinite(flowTempC)) {
-      applyValve(CLOSED);
-      return;
-    }
-
-    const float reopenThreshold = g_setpoint_c + LN_AUTO_HYSTERESIS_C;
-    if (g_valve == OPEN && flowTempC <= g_setpoint_c) {
-      applyValve(CLOSED);
-    } else if (g_valve == CLOSED && flowTempC >= reopenThreshold) {
-      applyValve(OPEN);
-    }
-    return;
-  }
-
-  if (!isfinite(thiTemp)) {
+static void runAutoValveControl() {
+  if (g_auto_status.closeRequested) {
+    g_auto_close_latched = true;
     applyValve(CLOSED);
     return;
   }
 
-  const float thiCloseThreshold = g_setpoint_c - LN_AUTO_THI_OFFSET_C;
-  const float thiReopenThreshold = thiCloseThreshold + LN_AUTO_HYSTERESIS_C;
-
-  if (g_valve == OPEN && thiTemp <= thiCloseThreshold) {
+  if (g_auto_close_latched && !g_auto_status.readyToOpen) {
     applyValve(CLOSED);
-  } else if (g_valve == CLOSED && thiTemp >= thiReopenThreshold) {
-    applyValve(OPEN);
+    return;
   }
+
+  g_auto_close_latched = false;
+  applyValve(OPEN);
+}
+
+static void refreshAutoStatusAfterTargetChange() {
+  updateAutoValveStatusFromValues(g_auto_status.thiTempC, g_auto_status.flowTempC);
+  if (g_mode == AUTO && g_auto_status_sampled) {
+    runAutoValveControl();
+  }
+}
+
+static bool setAutoTargets(float hfeGoalC, float hxLimitC, float hxApproachC, float hysteresisC) {
+  if (!isfinite(hfeGoalC) || !isfinite(hxLimitC) ||
+      !isfinite(hxApproachC) || !isfinite(hysteresisC) ||
+      hxApproachC < 0.0f || hysteresisC < 0.0f) {
+    return false;
+  }
+
+  g_hfe_goal_c = hfeGoalC;
+  g_hx_limit_c = hxLimitC;
+  g_hx_approach_c = hxApproachC;
+  g_ln_auto_hysteresis_c = hysteresisC;
+  refreshAutoStatusAfterTargetChange();
+  return true;
 }
 
 static void handleCommand(const String& s) {
@@ -560,23 +795,108 @@ static void handleCommand(const String& s) {
   else if (upper == "VALVE OPEN")       { g_mode = FORCE_OPEN;  applyValve(OPEN);   }
   else if (upper == "VALVE CLOSE") { g_mode = FORCE_CLOSE; applyValve(CLOSED); }
   else if (upper == "VALVE AUTO")  {
+    if (g_mode != AUTO) {
+      g_auto_close_latched = false;
+    }
     g_mode = AUTO;
-    g_ln_auto_flow_target_reached = false;
+    if (g_auto_status_sampled) {
+      runAutoValveControl();
+    }
+  }
+  else if (upper.startsWith("AUTO TARGETS")) {
+    float values[4] = { NAN, NAN, NAN, NAN };
+    if (!parseFloatArgs(cmd, 12, values, 4) ||
+        !setAutoTargets(values[0], values[1], values[2], values[3])) {
+      Serial.println(F("# Invalid AUTO TARGETS command"));
+      return;
+    }
+
+    Serial.print(F("# Auto targets set: HFE goal "));
+    Serial.print(g_hfe_goal_c, 2);
+    Serial.print(F(" C, HX limit "));
+    Serial.print(g_hx_limit_c, 2);
+    Serial.print(F(" C, HX approach "));
+    Serial.print(g_hx_approach_c, 2);
+    Serial.print(F(" C, hysteresis "));
+    Serial.print(g_ln_auto_hysteresis_c, 2);
+    Serial.println(F(" C"));
   }
   else if (upper.startsWith("SETPOINT")) {
-    String rest = cmd.substring(8);
-    rest.trim();
-
-    float nextSetpoint = NAN;
-    if (!tryParseFloat(rest, &nextSetpoint)) {
+    float nextGoal = NAN;
+    if (!parseFloatSuffix(cmd, 8, &nextGoal)) {
       Serial.println(F("# Invalid SETPOINT command"));
       return;
     }
 
-    g_setpoint_c = nextSetpoint;
-    g_ln_auto_flow_target_reached = false;
-    Serial.print(F("# Setpoint set to "));
-    Serial.print(g_setpoint_c, 2);
+    g_hfe_goal_c = nextGoal;
+    refreshAutoStatusAfterTargetChange();
+    Serial.print(F("# HFE goal set to "));
+    Serial.print(g_hfe_goal_c, 2);
+    Serial.println(F(" C"));
+  }
+  else if (upper.startsWith("HFE GOAL")) {
+    float nextGoal = NAN;
+    if (!parseFloatSuffix(cmd, 8, &nextGoal)) {
+      Serial.println(F("# Invalid HFE GOAL command"));
+      return;
+    }
+
+    g_hfe_goal_c = nextGoal;
+    refreshAutoStatusAfterTargetChange();
+    Serial.print(F("# HFE goal set to "));
+    Serial.print(g_hfe_goal_c, 2);
+    Serial.println(F(" C"));
+  }
+  else if (upper.startsWith("HX APPROACH")) {
+    float nextApproach = NAN;
+    if (!parseFloatSuffix(cmd, 11, &nextApproach) || nextApproach < 0.0f) {
+      Serial.println(F("# Invalid HX APPROACH command"));
+      return;
+    }
+
+    g_hx_approach_c = nextApproach;
+    refreshAutoStatusAfterTargetChange();
+    Serial.print(F("# HX approach set to "));
+    Serial.print(g_hx_approach_c, 2);
+    Serial.println(F(" C"));
+  }
+  else if (upper.startsWith("HX LIMIT")) {
+    float nextHxLimit = NAN;
+    if (!parseFloatSuffix(cmd, 8, &nextHxLimit)) {
+      Serial.println(F("# Invalid HX LIMIT command"));
+      return;
+    }
+
+    g_hx_limit_c = nextHxLimit;
+    refreshAutoStatusAfterTargetChange();
+    Serial.print(F("# HX limit set to "));
+    Serial.print(g_hx_limit_c, 2);
+    Serial.println(F(" C"));
+  }
+  else if (upper.startsWith("THI LIMIT")) {
+    float nextHxLimit = NAN;
+    if (!parseFloatSuffix(cmd, 9, &nextHxLimit)) {
+      Serial.println(F("# Invalid THI LIMIT command"));
+      return;
+    }
+
+    g_hx_limit_c = nextHxLimit;
+    refreshAutoStatusAfterTargetChange();
+    Serial.print(F("# HX limit set to "));
+    Serial.print(g_hx_limit_c, 2);
+    Serial.println(F(" C"));
+  }
+  else if (upper.startsWith("HYSTERESIS")) {
+    float nextHysteresis = NAN;
+    if (!parseFloatSuffix(cmd, 10, &nextHysteresis) || nextHysteresis < 0.0f) {
+      Serial.println(F("# Invalid HYSTERESIS command"));
+      return;
+    }
+
+    g_ln_auto_hysteresis_c = nextHysteresis;
+    refreshAutoStatusAfterTargetChange();
+    Serial.print(F("# Hysteresis set to "));
+    Serial.print(g_ln_auto_hysteresis_c, 2);
     Serial.println(F(" C"));
   }
   else if (upper == "HEATER BOTTOM ON")    { applyHeaterBottom(true); }
@@ -668,32 +988,36 @@ static void emitTelemetry(const float temps[], size_t count, unsigned long nowMs
 
   if (g_vfd.valid) {
     Serial.print(F(",\"freq_hz\":"));
-    Serial.print(g_vfd.freqHz, 3);
+    if (isfinite(g_vfd.freqHz)) Serial.print(g_vfd.freqHz, 2); else Serial.print(F("null"));
 
     Serial.print(F(",\"freq_pct\":"));
     float freqPct = (PUMP_MAX_FREQ_HZ > 0.0f) ? (g_vfd.freqHz / PUMP_MAX_FREQ_HZ * 100.0f) : NAN;
     if (isfinite(freqPct)) Serial.print(freqPct, 2); else Serial.print(F("null"));
 
     Serial.print(F(",\"input_power_pct\":"));
-    Serial.print(g_vfd.inputPowerPct, 2);
-    if (VFD_RATED_POWER_W > 0.0f) {
-      Serial.print(F(",\"input_power_w\":"));
-      Serial.print(g_vfd.inputPowerPct * 0.01f * VFD_RATED_POWER_W, 1);
-    }
+    if (isfinite(g_vfd.inputPowerPct)) Serial.print(g_vfd.inputPowerPct, 2); else Serial.print(F("null"));
+    Serial.print(F(",\"input_power_kw\":"));
+    if (isfinite(g_vfd.inputPowerKw)) Serial.print(g_vfd.inputPowerKw, 2); else Serial.print(F("null"));
+    Serial.print(F(",\"input_power_w\":"));
+    if (isfinite(g_vfd.inputPowerW)) Serial.print(g_vfd.inputPowerW, 0); else Serial.print(F("null"));
 
     Serial.print(F(",\"output_current_pct\":"));
-    Serial.print(g_vfd.outputCurrentPct, 2);
-    if (VFD_RATED_CURRENT_A > 0.0f) {
-      Serial.print(F(",\"output_current_a\":"));
-      Serial.print(g_vfd.outputCurrentPct * 0.01f * VFD_RATED_CURRENT_A, 3);
-    }
+    if (isfinite(g_vfd.outputCurrentPct)) Serial.print(g_vfd.outputCurrentPct, 2); else Serial.print(F("null"));
+    Serial.print(F(",\"output_current_a\":"));
+    if (isfinite(g_vfd.outputCurrentA)) Serial.print(g_vfd.outputCurrentA, 2); else Serial.print(F("null"));
 
     Serial.print(F(",\"output_voltage_v\":"));
-    Serial.print(g_vfd.outputVoltageV, 1);
+    if (isfinite(g_vfd.outputVoltageV)) Serial.print(g_vfd.outputVoltageV, 1); else Serial.print(F("null"));
     if (VFD_BASE_VOLTAGE > 0.0f) {
       Serial.print(F(",\"output_voltage_pct\":"));
-      Serial.print(g_vfd.outputVoltageV / VFD_BASE_VOLTAGE * 100.0f, 1);
+      float outputVoltagePct = isfinite(g_vfd.outputVoltageV)
+        ? (g_vfd.outputVoltageV / VFD_BASE_VOLTAGE * 100.0f)
+        : NAN;
+      if (isfinite(outputVoltagePct)) Serial.print(outputVoltagePct, 1); else Serial.print(F("null"));
     }
+
+    Serial.print(F(",\"rotation_speed_rpm\":"));
+    if (isfinite(g_vfd.rotationSpeedRpm)) Serial.print(g_vfd.rotationSpeedRpm, 0); else Serial.print(F("null"));
   }
 
   Serial.print(F(",\"pressure_before_bar\":"));
@@ -795,16 +1119,44 @@ static void emitTelemetry(const float temps[], size_t count, unsigned long nowMs
   }
   Serial.print('}');
   Serial.print(F(",\"control\":{"));
-  Serial.print(F("\"setpoint_c\":"));
-  Serial.print(g_setpoint_c, 2);
+  Serial.print(F("\"hfe_goal_c\":"));
+  Serial.print(g_hfe_goal_c, 2);
+  Serial.print(F(",\"setpoint_c\":"));
+  Serial.print(g_hfe_goal_c, 2);
+  Serial.print(F(",\"hx_limit_c\":"));
+  Serial.print(g_hx_limit_c, 2);
+  Serial.print(F(",\"thi_limit_c\":"));
+  Serial.print(g_hx_limit_c, 2);
   Serial.print(F(",\"ln_hysteresis_c\":"));
-  Serial.print(LN_AUTO_HYSTERESIS_C, 2);
-  Serial.print(F(",\"thi_guard_offset_c\":"));
-  Serial.print(LN_AUTO_THI_OFFSET_C, 1);
+  Serial.print(g_ln_auto_hysteresis_c, 2);
+  Serial.print(F(",\"hx_approach_c\":"));
+  Serial.print(g_hx_approach_c, 2);
+  Serial.print(F(",\"thi_temp_c\":"));
+  if (g_auto_status.thiValid) Serial.print(g_auto_status.thiTempC, 2); else Serial.print(F("null"));
+  Serial.print(F(",\"flow_temp_c\":"));
+  if (g_auto_status.flowValid) Serial.print(g_auto_status.flowTempC, 2); else Serial.print(F("null"));
+  Serial.print(F(",\"thi_valid\":"));
+  Serial.print(g_auto_status.thiValid ? F("true") : F("false"));
+  Serial.print(F(",\"flow_valid\":"));
+  Serial.print(g_auto_status.flowValid ? F("true") : F("false"));
+  Serial.print(F(",\"thi_reopen_c\":"));
+  if (isfinite(g_auto_status.thiReopenThresholdC)) Serial.print(g_auto_status.thiReopenThresholdC, 2);
+  else Serial.print(F("null"));
+  Serial.print(F(",\"flow_reopen_c\":"));
+  Serial.print(g_auto_status.flowReopenThresholdC, 2);
+  Serial.print(F(",\"close_requested\":"));
+  Serial.print(g_auto_status.closeRequested ? F("true") : F("false"));
+  Serial.print(F(",\"ready_to_open\":"));
+  Serial.print(g_auto_status.readyToOpen ? F("true") : F("false"));
+  Serial.print(F(",\"auto_close_latched\":"));
+  Serial.print(g_auto_close_latched ? F("true") : F("false"));
+  Serial.print(F(",\"within_hysteresis_band\":"));
+  Serial.print((g_auto_close_latched && !g_auto_status.closeRequested && !g_auto_status.readyToOpen) ? F("true") : F("false"));
+  Serial.print(F(",\"auto_close_reason\":\""));
+  Serial.print(autoCloseReasonKey(g_auto_status.reason));
+  Serial.print('"');
   Serial.print(F(",\"telemetry_interval_ms\":"));
   Serial.print(SAMPLE_INTERVAL_MS);
-  Serial.print(F(",\"flow_target_reached\":"));
-  Serial.print(g_ln_auto_flow_target_reached ? F("true") : F("false"));
   Serial.print('}');
   Serial.print(F(",\"heaters\":{"));
   Serial.print(F("\"bottom\":"));
@@ -824,6 +1176,8 @@ void setup() {
   setupPwm2kHz();
   setPumpCommandPct(0.0f);  // start at 0% analog
 
+  g_mode = DEFAULT_VALVE_MODE;
+  digitalWrite(VALVE_PIN, LOW);
   pinMode(VALVE_PIN, OUTPUT);
   applyValve(CLOSED);
   pinMode(HEATER_BOTTOM_PIN, OUTPUT);
@@ -844,12 +1198,12 @@ void setup() {
     digitalWrite(CS_PINS[i], HIGH); // deselect
     tc[i] = new Adafruit_MAX31856(CS_PINS[i], MOSI_PIN, MISO_PIN, SCK_PIN);
     tc[i]->begin();
-    tc[i]->setThermocoupleType(MAX31856_TCTYPE_K);
+    tc[i]->setThermocoupleType(TC_TYPES[i]);
     tc[i]->setNoiseFilter(MAX31856_NOISE_FILTER_60HZ); // correct enum
   }
 
   // JSON line telemetry: temps[0..9] (°C), valve (0/1), mode (A/O/C), pump{}, safety{}, fluid{}, control{}, heaters{}
-  Serial.println(F("# Telemetry keys: temps[0..9] (°C), valve (0/1), mode (A/O/C), pump{} (VFD + pressures), safety{} (latched interlocks), fluid{} (MFC400), control{} (setpoint + LN auto), heaters{bottom,exhaust}"));
+  Serial.println(F("# Telemetry keys: temps[0..9] (°C), valve (0/1), mode (A/O/C), pump{} (VFD + pressures), safety{} (latched interlocks), fluid{} (MFC400), control{} (HFE goal + HX limit + hysteresis + HX approach + LN auto status), heaters{bottom,exhaust}"));
 }
 
 void loop() {
@@ -884,9 +1238,11 @@ void loop() {
       temps_out[i] = (i < NUM_TCS) ? safeReadCelsius(tc[i]) : NAN;
     }
 
-    // Control: LN auto uses THI and the flow-meter temperature around the setpoint.
+    updateAutoValveStatus(temps_out, MAX_TCS_OUT);
+
+    // Control: LN auto closes on THI/HFE cold limits and reopens once both recover by hysteresis.
     if (g_mode == AUTO) {
-      runAutoValveControl(temps_out, MAX_TCS_OUT);
+      runAutoValveControl();
     } else if (g_mode == FORCE_OPEN)  applyValve(OPEN);
     else if (g_mode == FORCE_CLOSE)   applyValve(CLOSED);
 

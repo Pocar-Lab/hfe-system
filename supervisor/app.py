@@ -197,21 +197,24 @@ TEMP_LOG_COLUMNS = [
     "U5_C",
     "TTO_C",
     "TMI_C",
-    "THM_C",
     "THI_C",
+    "THM_C",
 ]
+TC_CALIBRATION_PATH = REPO / "data" / "processed" / "calibration" / "TC_calibration_20260420.csv"
 RAW_LOG_DIR = REPO / "data" / "raw"
 PUMP_LOG_FIELDS: list[tuple[str, str, str]] = [
     ("pump_cmd_pct", "cmd_pct", "{:.3f}"),
-    ("pump_freq_hz", "freq_hz", "{:.3f}"),
-    ("pump_input_power_w", "input_power_w", "{:.2f}"),
-    ("pump_output_current_a", "output_current_a", "{:.3f}"),
-    ("pump_output_voltage_v", "output_voltage_v", "{:.2f}"),
+    ("pump_freq_hz", "freq_hz", "{:.2f}"),
+    ("pump_rotation_speed_rpm", "rotation_speed_rpm", "{:.0f}"),
+    ("pump_input_power_kw", "input_power_kw", "{:.2f}"),
+    ("pump_input_power_w", "input_power_w", "{:.0f}"),
+    ("pump_output_current_a", "output_current_a", "{:.2f}"),
+    ("pump_output_voltage_v", "output_voltage_v", "{:.1f}"),
     ("pump_pressure_before_bar_abs", "pressure_before_bar_abs", "{:.3f}"),
     ("pump_pressure_after_bar_abs", "pressure_after_bar_abs", "{:.3f}"),
     ("pump_pressure_tank_bar_abs", "pressure_tank_bar_abs", "{:.3f}"),
     ("pump_pressure_error_bar", "pressure_error_bar", "{:.3f}"),
-    ("pump_max_freq_hz", "max_freq_hz", "{:.3f}"),
+    ("pump_max_freq_hz", "max_freq_hz", "{:.1f}"),
 ]
 FLUID_LOG_FIELDS: list[tuple[str, str, str]] = [
     ("fluid_meter_valid", "meter_valid", "{:.0f}"),
@@ -220,9 +223,86 @@ FLUID_LOG_FIELDS: list[tuple[str, str, str]] = [
     ("fluid_volume_flow_m3s", "volume_flow_m3s", "{:.9f}"),
     ("fluid_mass_flow_kgs", "mass_flow_kgs", "{:.9f}"),
     ("fluid_temperature_c", "temperature_c", "{:.3f}"),
-    ("fluid_density_kg_m3", "density_kg_m3", "{:.6f}"),
+    ("fluid_density_kg_m3", "density_kg_m3", "{:.0f}"),
     ("fluid_delta_p_bar", "delta_p_bar", "{:.3f}"),
 ]
+
+
+def _load_tc_calibration(path: Path) -> dict[str, dict[str, float | str]]:
+    calibration: dict[str, dict[str, float | str]] = {}
+    if not path.exists():
+        log.warning("Thermocouple calibration file not found: %s", path)
+        return calibration
+
+    try:
+        with path.open("r", newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                tc_tag = str(row.get("TC") or "").strip()
+                if not tc_tag:
+                    continue
+                try:
+                    gain = float(row.get("gain", "nan"))
+                    offset_c = float(row.get("offset_C", "nan"))
+                except (TypeError, ValueError):
+                    continue
+                if not (math.isfinite(gain) and math.isfinite(offset_c)):
+                    continue
+                calibration[f"{tc_tag}_C"] = {
+                    "gain": gain,
+                    "offset_c": offset_c,
+                    "cal_type": str(row.get("cal_type") or "").strip(),
+                }
+    except Exception as exc:
+        log.error("Failed to load thermocouple calibration from %s: %s", path, exc)
+        return {}
+
+    if calibration:
+        summary = ", ".join(
+            f"{column.removesuffix('_C')}({entry['cal_type'] or 'unspecified'})"
+            for column, entry in calibration.items()
+        )
+        log.info("Loaded thermocouple calibration from %s: %s", path.name, summary)
+    else:
+        log.warning("Thermocouple calibration file %s was empty or invalid", path)
+    return calibration
+
+
+TC_CALIBRATION = _load_tc_calibration(TC_CALIBRATION_PATH)
+
+
+def _calibrate_tc_value(column: str, raw_value: object) -> float | None:
+    raw = _finite_float(raw_value)
+    if raw is None:
+        return None
+    entry = TC_CALIBRATION.get(column)
+    if not entry:
+        return raw
+    gain = float(entry["gain"])
+    offset_c = float(entry["offset_c"])
+    calibrated = gain * raw + offset_c
+    return calibrated if math.isfinite(calibrated) else None
+
+
+def _calibrate_tc_temps(temps: object) -> tuple[list[float | None], list[float | None]]:
+    if not isinstance(temps, list):
+        return [], []
+
+    calibrated_temps: list[float | None] = []
+    raw_temps: list[float | None] = []
+    for index, value in enumerate(temps):
+        raw = _finite_float(value)
+        raw_temps.append(raw)
+        column = TEMP_LOG_COLUMNS[index] if index < len(TEMP_LOG_COLUMNS) else f"temp{index}_C"
+        calibrated_temps.append(_calibrate_tc_value(column, raw))
+    return calibrated_temps, raw_temps
+
+
+def _first_finite(values: list[float | None]) -> float | None:
+    for value in values:
+        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+            return float(value)
+    return None
 
 
 def _finite_float(value: object) -> float | None:
@@ -332,10 +412,32 @@ def _normalize_telemetry_payload(payload: dict) -> dict:
     if payload.get("_units_normalized"):
         return payload
 
+    normalized = dict(payload)
+
+    calibrated_temps, raw_temps = _calibrate_tc_temps(payload.get("temps"))
+    if calibrated_temps:
+        normalized["temps"] = calibrated_temps
+        normalized["temps_raw"] = raw_temps
+        first_calibrated = _first_finite(calibrated_temps)
+        if first_calibrated is not None:
+            normalized["tC"] = first_calibrated
+        first_raw = _first_finite(raw_temps)
+        if first_raw is not None:
+            normalized["tC_raw"] = first_raw
+
+    control_raw = payload.get("control")
+    control = control_raw if isinstance(control_raw, dict) else None
+    if control is not None:
+        normalized_control = dict(control)
+        thi_raw = _finite_float(control.get("thi_temp_c"))
+        if thi_raw is not None:
+            normalized_control["thi_temp_c_raw"] = thi_raw
+            normalized_control["thi_temp_c"] = _calibrate_tc_value("THI_C", thi_raw)
+        normalized["control"] = normalized_control
+
     fluid_raw = payload.get("fluid")
     fluid = fluid_raw if isinstance(fluid_raw, dict) else None
     if fluid is None:
-        normalized = dict(payload)
         normalized["_units_normalized"] = True
         return normalized
 
@@ -346,7 +448,6 @@ def _normalize_telemetry_payload(payload: dict) -> dict:
     normalized_fluid["temperature_c"] = _flow_temperature_to_c(fluid.get("temperature_raw"))
     normalized_fluid["density_kg_m3"] = _density_to_kg_m3(fluid.get("density_kg_m3"))
 
-    normalized = dict(payload)
     normalized["fluid"] = normalized_fluid
     normalized["_units_normalized"] = True
     return normalized
@@ -422,6 +523,7 @@ def _start_logging(state, filename: Optional[str] = None) -> dict:
         safe_name = f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     path = RAW_LOG_DIR / safe_name
     fh = path.open("w", newline="", encoding="utf-8")
+    fh.write(f"# tc_calibrated=true,calibration_file={TC_CALIBRATION_PATH.name}\n")
     writer = csv.writer(fh)
     header = (
         ["time_s"]
@@ -602,16 +704,18 @@ async def lifespan(app: FastAPI):
                     "fault": False,
                     "pump": {
                         "cmd_pct": pump_cmd_pct,
-                        "cmd_hz": pump_cmd_pct / 100.0 * 60.0,
+                        "cmd_hz": pump_cmd_pct / 100.0 * 71.7,
                         "freq_hz": pump_freq_hz,
                         "freq_pct": pump_freq_pct,
-                        "output_current_a": 0.5 + 0.1 * (random.random() - 0.5),
-                        "output_current_pct": 18.0 + 3.0 * (random.random() - 0.5),
-                        "output_voltage_v": 12.0 + 0.5 * (random.random() - 0.5),
-                        "output_voltage_pct": 5.0 + 0.2 * (random.random() - 0.5),
-                        "input_power_w": 30.0 + 5.0 * (random.random() - 0.5),
-                        "input_power_pct": 8.0 + 2.0 * (random.random() - 0.5),
-                        "max_freq_hz": 60.0,
+                        "rotation_speed_rpm": 0.0,
+                        "output_current_a": 0.0,
+                        "output_current_pct": 0.0,
+                        "output_voltage_v": 0.0,
+                        "output_voltage_pct": 0.0,
+                        "input_power_kw": 0.0,
+                        "input_power_w": 0.0,
+                        "input_power_pct": 0.0,
+                        "max_freq_hz": 71.7,
                     },
                 }
             )

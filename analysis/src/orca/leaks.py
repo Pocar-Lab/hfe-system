@@ -21,7 +21,7 @@ from matplotlib.transforms import Bbox
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RAW_DATA_DIR = REPO_ROOT / "data" / "raw"
 PROCESSED_DATA_DIR = REPO_ROOT / "data" / "processed"
-DEFAULT_LEAK_DATA_DIR = PROCESSED_DATA_DIR / "leaks"
+DEFAULT_LEAK_DATA_DIR = PROCESSED_DATA_DIR / "leak_test"
 RAW_LOG_PATTERN = re.compile(r"^log_(\d{8})_(\d{6})(?:.*)?\.csv$")
 
 TIME_COLUMN = "time_s"
@@ -642,7 +642,7 @@ def load_pressure_series(
     if room_temp_column is not None:
         required_columns.append(room_temp_column)
 
-    frame = pd.read_csv(csv_path).dropna(subset=required_columns)
+    frame = pd.read_csv(csv_path, comment="#").dropna(subset=required_columns)
     time_h = ((frame[TIME_COLUMN] - frame[TIME_COLUMN].iloc[0]) / 3600.0).to_numpy(dtype=float)
     pressure_abs_bar = frame[pressure_abs_column].to_numpy(dtype=float)
     if pressure_gauge_column is None:
@@ -729,7 +729,7 @@ def build_reservoir_case_from_log(  # pylint: disable=too-many-arguments
     """Build a reservoir leak case from a logged absolute-pressure channel."""
 
     resolved_path = resolve_pressure_log_path(csv_path)
-    frame = pd.read_csv(resolved_path).dropna(
+    frame = pd.read_csv(resolved_path, comment="#").dropna(
         subset=[TIME_COLUMN, pressure_abs_column, PRESSURE_ERR_COLUMN]
     )
     if len(frame) < 2:
