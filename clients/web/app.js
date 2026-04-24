@@ -55,6 +55,11 @@
     { column: 'fluid_density_kg_m3', key: 'density_kg_m3', digits: 0 },
     { column: 'fluid_delta_p_bar', key: 'delta_p_bar', digits: 3 },
   ];
+  const SCALE_LOG_FIELDS = [
+    { column: 'scale_weight_kg', key: 'weight_kg', digits: 3 },
+    { column: 'scale_age_s', key: 'age_s', digits: 3 },
+    { column: 'scale_tare_kg', key: 'tare_kg', digits: 3 },
+  ];
   const TEMP_LOG_COLUMNS = ['U0_C', 'U1_C', 'TTEST_C', 'TFO_C', 'TTI_C', 'U5_C', 'TTO_C', 'TMI_C', 'THI_C', 'THM_C'];
   const LOG_HEADER = [
     'time_s',
@@ -63,9 +68,10 @@
     'mode',
     ...PUMP_LOG_FIELDS.map((field) => field.column),
     ...FLUID_LOG_FIELDS.map((field) => field.column),
+    ...SCALE_LOG_FIELDS.map((field) => field.column),
   ];
   const LOG_FIELD_DIGITS = new Map(
-    [...PUMP_LOG_FIELDS, ...FLUID_LOG_FIELDS].map((field) => [field.column, field.digits ?? 3]),
+    [...PUMP_LOG_FIELDS, ...FLUID_LOG_FIELDS, ...SCALE_LOG_FIELDS].map((field) => [field.column, field.digits ?? 3]),
   );
 
   const params = new URLSearchParams(window.location.search);
@@ -120,6 +126,8 @@
   const overviewValveEl = document.getElementById('overview-valve');
   const overviewPumpDeltaPEl = document.getElementById('overview-pump-delta-p');
   const overviewPumpDeltaPSubEl = document.getElementById('overview-pump-delta-p-sub');
+  const overviewScaleWeightEl = document.getElementById('overview-scale-weight');
+  const overviewScaleStatusEl = document.getElementById('overview-scale-status');
   const sensorValuesEl = document.getElementById('sensor-values');
   const loggingToggleBtn = document.getElementById('logging-toggle');
   const fluidNameEl = document.getElementById('fluid-name');
@@ -140,6 +148,9 @@
   const autoHysteresisInput = document.getElementById('auto-hysteresis-input');
   const hxApproachInput = document.getElementById('hx-approach-input');
   const autoModeStatusEl = document.getElementById('auto-mode-status');
+  const scaleTareForm = document.getElementById('scale-tare-form');
+  const scaleTareInput = document.getElementById('scale-tare-input');
+  const scaleTareStatusEl = document.getElementById('scale-tare-status');
   const chartSectionEl = document.getElementById('chart-section');
   const chartPanelEls = Array.from(chartSectionEl ? chartSectionEl.querySelectorAll('.chart-panel') : []);
   const tempChartCanvas = document.getElementById('temp-chart');
@@ -292,6 +303,7 @@
   let pumpRunning = false;
   let userPumpDirty = false;
   let overspeedEnabled = false;
+  let scaleTareKg = 0.0;
   let pumpSafetyState = buildPumpSafetyModel(null, null);
   const localAutoTargetOverrides = new Set();
 
@@ -782,7 +794,7 @@
       const text = typeof value === 'string' ? value : String(value || '');
       return text.slice(0, 1);
     }
-    if (column.startsWith('pump_') || column.startsWith('fluid_')) {
+    if (column.startsWith('pump_') || column.startsWith('fluid_') || column.startsWith('scale_')) {
       const digits = LOG_FIELD_DIGITS.get(column) ?? 3;
       const num = typeof value === 'number' ? value : Number(value);
       return Number.isFinite(num) ? num.toFixed(digits) : 'nan';
@@ -1574,6 +1586,70 @@
     }
   }
 
+  function setScaleTareStatus(text, tone = '') {
+    if (!scaleTareStatusEl) {
+      return;
+    }
+    scaleTareStatusEl.textContent = text;
+    setTone(scaleTareStatusEl, tone);
+  }
+
+  function syncScaleTareInput({ force = false } = {}) {
+    if (!scaleTareInput) {
+      return;
+    }
+    if (force || document.activeElement !== scaleTareInput) {
+      scaleTareInput.value = scaleTareKg.toFixed(3);
+    }
+  }
+
+  async function refreshScaleTare() {
+    try {
+      const data = await apiJson('/api/scale/tare', { method: 'GET' });
+      const nextTareKg = finiteNumber(data.tare_kg);
+      if (Number.isFinite(nextTareKg)) {
+        scaleTareKg = nextTareKg;
+        syncScaleTareInput({ force: true });
+        setScaleTareStatus(`Tare set to ${scaleTareKg.toFixed(3)} kg`, 'success');
+      }
+    } catch (err) {
+      console.warn('Scale tare fetch failed', err);
+      setScaleTareStatus('Tare status unavailable', 'warn');
+    }
+  }
+
+  function updateScaleTelemetry(scaleData) {
+    const scale = scaleData && typeof scaleData === 'object' ? scaleData : null;
+    const weightKg = scale ? finiteNumber(scale.weight_kg) : NaN;
+    const tareKg = scale ? finiteNumber(scale.tare_kg) : NaN;
+    const stale = scale ? coerceOnOff(scale.stale) === true : false;
+    const stable = scale ? coerceOnOff(scale.stable) : null;
+
+    if (Number.isFinite(tareKg)) {
+      scaleTareKg = tareKg;
+      syncScaleTareInput();
+      if (scaleTareStatusEl && !scaleTareStatusEl.textContent.trim()) {
+        setScaleTareStatus(`Tare set to ${scaleTareKg.toFixed(3)} kg`, 'success');
+      }
+    }
+
+    if (overviewScaleWeightEl) {
+      overviewScaleWeightEl.textContent = Number.isFinite(weightKg)
+        ? `${weightKg.toFixed(1)} kg`
+        : '—';
+      setTone(overviewScaleWeightEl, stale ? 'warn' : '');
+    }
+
+    if (overviewScaleStatusEl) {
+      const parts = [];
+      if (stable !== null) {
+        parts.push(stable ? 'stable' : 'moving');
+      }
+      overviewScaleStatusEl.textContent = parts.length ? parts.join(' • ') : 'Awaiting scale';
+      setTone(overviewScaleStatusEl, stale ? 'warn' : '');
+    }
+  }
+
   function handleTelemetry(data) {
     const tempsRaw = Array.isArray(data.temps)
       ? data.temps
@@ -1670,6 +1746,7 @@
     const pump = data && typeof data.pump === 'object' ? data.pump : null;
     const safety = data && typeof data.safety === 'object' ? data.safety : null;
     const fluid = data && typeof data.fluid === 'object' ? data.fluid : null;
+    const scale = data && typeof data.scale === 'object' ? data.scale : null;
     const pressureValues = [
       pump && Number.isFinite(pump.pressure_before_bar_abs) ? pump.pressure_before_bar_abs : null,
       pump && Number.isFinite(pump.pressure_after_bar_abs) ? pump.pressure_after_bar_abs : null,
@@ -1725,11 +1802,13 @@
       pump,
       safety,
       fluid,
+      scale,
       control,
     };
     updatePumpTelemetry(pump, pumpSafetyState);
     updateSensorStats();
     updateFluidTelemetry(fluid, pump);
+    updateScaleTelemetry(scale);
     updateAutoModeStatus(control);
 
     if (!previousEmergencyStop && pumpSafetyState.resetRequired) {
@@ -1753,6 +1832,7 @@
       row.push(modeChar);
       row.push(...extractLogValues(pump, PUMP_LOG_FIELDS));
       row.push(...extractLogValues(fluidLog, FLUID_LOG_FIELDS));
+      row.push(...extractLogValues(scale, SCALE_LOG_FIELDS));
       loggingRows.push(row);
     }
 
@@ -2129,6 +2209,44 @@
     });
   }
 
+  if (scaleTareForm) {
+    scaleTareForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!scaleTareInput) {
+        return;
+      }
+      const nextTareKg = parseFloat(scaleTareInput.value);
+      if (!Number.isFinite(nextTareKg) || nextTareKg < 0) {
+        setScaleTareStatus('Invalid tare weight', 'error');
+        setCommandStatus('Invalid scale tare weight', 'error');
+        return;
+      }
+
+      try {
+        setScaleTareStatus('Saving tare…', 'info');
+        const data = await apiJson('/api/scale/tare', {
+          method: 'POST',
+          body: JSON.stringify({ tare_kg: nextTareKg }),
+        });
+        const savedTareKg = finiteNumber(data.tare_kg);
+        scaleTareKg = Number.isFinite(savedTareKg) ? savedTareKg : nextTareKg;
+        syncScaleTareInput({ force: true });
+        if (latestSnapshot) {
+          latestSnapshot.scale =
+            latestSnapshot.scale && typeof latestSnapshot.scale === 'object'
+              ? { ...latestSnapshot.scale, tare_kg: scaleTareKg }
+              : { tare_kg: scaleTareKg };
+        }
+        setScaleTareStatus(`Tare set to ${scaleTareKg.toFixed(3)} kg`, 'success');
+        setCommandStatus(`Scale tare set to ${scaleTareKg.toFixed(3)} kg`, 'success');
+      } catch (err) {
+        console.error('Scale tare update failed', err);
+        setScaleTareStatus(`Save failed: ${err.message}`, 'error');
+        setCommandStatus(`Scale tare update failed: ${err.message}`, 'error');
+      }
+    });
+  }
+
   if (loggingToggleBtn) {
     loggingToggleBtn.addEventListener('click', () => {
       if (loggingEnabled || serverLogInfo.active) {
@@ -2161,11 +2279,12 @@
   syncPumpInputs(lastPumpCmdPct, { force: true });
   updatePumpSafetyStatus();
   updatePumpActionButtons();
+  syncScaleTareInput({ force: true });
 
   updateLoggingStatusLabel();
   updateLoggingButtonState();
 
-  refreshLoggingStatus()
+  Promise.allSettled([refreshLoggingStatus(), refreshScaleTare()])
     .catch(() => {})
     .finally(() => {
       connectWebSocket();

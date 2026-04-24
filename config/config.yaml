@@ -2,6 +2,18 @@ serial:
   port: "/dev/ttyACM0"      # adjust on macOS/Windows if needed
   baudrate: 115200
 
+scale:
+  enabled: true
+  port: "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"  # USB virtual RS232 from Global Industrial 318506
+  baudrate: 9600            # match USER-COM2-BAUD.RT on the scale
+  byte_format: "8N1"        # match USER-COM2-BYT.FMT on the scale
+  layout: "MULTPL"          # MULTPL, SINGLE, EH-SCP, or SCP-12
+  stale_after_s: 5.0
+  timeout_s: 0.2
+  request_interval_s: 1.0
+  request_command: "W\\r"   # poll current reading; clear this for continuous/stable-only output modes
+  tare_kg: 0.0
+
 server:
   host: "0.0.0.0"
   port: 8010

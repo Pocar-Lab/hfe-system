@@ -66,6 +66,12 @@
             <p id="overview-pump-delta-p-sub" class="overview-subvalue muted"></p>
             <p class="overview-hint">Pressure difference calculated from the PMO and PMI sensors.</p>
           </article>
+          <article class="overview-card">
+            <h3>Scale Weight</h3>
+            <p id="overview-scale-weight" class="overview-value">—</p>
+            <p id="overview-scale-status" class="overview-subvalue muted">Awaiting scale</p>
+            <p class="overview-hint">Live reading from the USB scale.</p>
+          </article>
         </section>
 
         <section id="chart-section">
@@ -294,6 +300,19 @@
               <p id="auto-mode-status" class="auto-status muted">Awaiting auto-mode telemetry…</p>
               <div class="form-actions">
                 <button type="submit" class="primary">Apply Auto Targets</button>
+              </div>
+            </form>
+          </div>
+          <div class="control-group">
+            <h2>Scale Tare</h2>
+            <form id="scale-tare-form" class="form-row" onsubmit="return false">
+              <label>
+                Tare Weight (kg)
+                <input type="number" id="scale-tare-input" step="0.001" min="0" inputmode="decimal" value="0.000" />
+              </label>
+              <p id="scale-tare-status" class="auto-status muted">Tare set to 0.000 kg</p>
+              <div class="form-actions">
+                <button type="submit" class="primary">Apply Tare</button>
               </div>
             </form>
           </div>

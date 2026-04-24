@@ -42,6 +42,7 @@ After a computer reboot/reset or after unplugging/replugging the Arduino:
 
 ## Supervisor API
 - Configure `config/config.yaml` with the serial port/baudrate, flow-meter source units, and optionally `server.auth_token`.
+- For the Global Industrial 318506 scale, set `scale.port`, `scale.baudrate`, `scale.byte_format`, and `scale.layout` to match the scale's `USER-COM2-*` menu settings. The default USB virtual RS232 setup here is `COM2`, `9600`, `8N1`, `MULTPL`.
 - Launch the API with the project helper:
   `bash scripts/start_supervisor.sh`
   - This helper uploads firmware by default, then starts `uvicorn supervisor.app:app` in the background.

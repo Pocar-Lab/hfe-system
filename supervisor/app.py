@@ -5,6 +5,8 @@ import os
 import csv
 import json
 import math
+import re
+import time
 import asyncio
 import threading
 import logging
@@ -76,6 +78,10 @@ FLOW_MASS_FLOW_SOURCE_UNIT = _normalize_token(
 FLOW_DENSITY_SOURCE_UNIT = _normalize_token(
     FLOW_METER_CFG.get("density_unit"), "kg_m3"
 )
+SCALE_CFG = CFG.get("scale", {}) or {}
+SCALE_ENABLED = bool(SCALE_CFG.get("enabled", False))
+SCALE_LAYOUT = _normalize_token(SCALE_CFG.get("layout"), "multpl")
+SCALE_STALE_AFTER_S = float(SCALE_CFG.get("stale_after_s", 5.0) or 5.0)
 
 log.info(
     "Auth required: %s; token prefix: %s",
@@ -90,6 +96,14 @@ log.info(
     FLOW_TEMPERATURE_SOURCE_UNIT,
     FLOW_DENSITY_SOURCE_UNIT,
 )
+if SCALE_ENABLED:
+    log.info(
+        "Scale serial enabled: port=%s baud=%s byte_format=%s layout=%s",
+        SCALE_CFG.get("port") or "(auto)",
+        SCALE_CFG.get("baudrate", 9600),
+        SCALE_CFG.get("byte_format", "8N1"),
+        SCALE_LAYOUT,
+    )
 
 # Ensure data directory exists if configured (even if we don't write yet)
 data_dir = (Path(CFG.get("logging", {}).get("parquet_dir", "")) if CFG.get("logging") else None)
@@ -225,6 +239,11 @@ FLUID_LOG_FIELDS: list[tuple[str, str, str]] = [
     ("fluid_temperature_c", "temperature_c", "{:.3f}"),
     ("fluid_density_kg_m3", "density_kg_m3", "{:.0f}"),
     ("fluid_delta_p_bar", "delta_p_bar", "{:.3f}"),
+]
+SCALE_LOG_FIELDS: list[tuple[str, str, str]] = [
+    ("scale_weight_kg", "weight_kg", "{:.3f}"),
+    ("scale_age_s", "age_s", "{:.3f}"),
+    ("scale_tare_kg", "tare_kg", "{:.3f}"),
 ]
 
 
@@ -398,6 +417,117 @@ def _density_to_kg_m3(raw_value: object) -> float | None:
     return _convert_with_factor(raw_value, _DENSITY_TO_KG_M3, FLOW_DENSITY_SOURCE_UNIT)
 
 
+_SCALE_WEIGHT_RE = re.compile(
+    r"(?P<sign>[+-]?)\s*"
+    r"(?P<value>\d+(?:\.\d+)?)\s*"
+    r"(?P<unit>lb:oz|lb|kg|g|oz)\b"
+    r"(?:\s*(?P<oz>\d+(?:\.\d+)?)\s*oz\b)?",
+    re.IGNORECASE,
+)
+_SCALE_WEIGHT_LABELS = {"gross", "tare", "net", "total"}
+_SCALE_STATUS_LAYOUTS_WITH_STABLE_BIT_SET = {"scp_12", "scp12"}
+
+
+def _normalize_scale_label(value: str | None) -> str:
+    label = str(value or "").strip().lower()
+    for old, new in ((".", ""), (" ", "_"), ("-", "_")):
+        label = label.replace(old, new)
+    return label
+
+
+def _scale_status_flags(status: str, layout: str) -> dict:
+    text = str(status or "").strip()
+    if not text:
+        return {}
+    first_byte = text.encode("latin1", errors="ignore")[:1]
+    if not first_byte:
+        return {}
+    bit0_set = bool(first_byte[0] & 0x01)
+    stable = bit0_set if layout in _SCALE_STATUS_LAYOUTS_WITH_STABLE_BIT_SET else not bit0_set
+    return {"stable": stable}
+
+
+def _scale_weight_conversions(weight: float, unit: str) -> dict[str, float]:
+    normalized_unit = unit.lower()
+    if normalized_unit == "kg":
+        weight_kg = weight
+        weight_lb = weight * 2.20462262185
+    elif normalized_unit == "g":
+        weight_kg = weight / 1000.0
+        weight_lb = weight_kg * 2.20462262185
+    elif normalized_unit == "oz":
+        weight_lb = weight / 16.0
+        weight_kg = weight_lb / 2.20462262185
+    else:
+        weight_lb = weight
+        weight_kg = weight / 2.20462262185
+    return {"weight_lb": weight_lb, "weight_kg": weight_kg}
+
+
+def parse_scale_payload(raw: bytes | str, *, layout: str = SCALE_LAYOUT) -> Optional[dict]:
+    """
+    Parse Global Industrial 318506 serial lines in MULTPL/SINGLE/SCP-12-style layouts.
+    """
+    if isinstance(raw, bytes):
+        text = raw.decode("ascii", errors="ignore")
+    else:
+        text = str(raw)
+    text = text.replace("\x02", "").replace("\x03", "").replace("\x00", "").strip()
+    if not text or text == "?":
+        return None
+
+    label = ""
+    body = text
+    prompt = re.match(r"^(?P<label>[A-Za-z0-9 ./]+?)\s*:\s*(?P<body>.+)$", text)
+    if prompt:
+        label = _normalize_scale_label(prompt.group("label"))
+        body = prompt.group("body").strip()
+
+    if label == "status":
+        return {
+            "type": "scale",
+            "status": body,
+            "raw": text,
+            **_scale_status_flags(body, layout),
+        }
+
+    if label and label not in _SCALE_WEIGHT_LABELS:
+        return None
+
+    match = _SCALE_WEIGHT_RE.search(body)
+    if not match:
+        status_candidate = body.strip()
+        if not label and 1 <= len(status_candidate) <= 4:
+            return {
+                "type": "scale",
+                "status": status_candidate,
+                "raw": text,
+                **_scale_status_flags(status_candidate, layout),
+            }
+        return None
+
+    sign = -1.0 if match.group("sign") == "-" else 1.0
+    unit = match.group("unit").lower()
+    try:
+        weight = float(match.group("value"))
+        if unit == "lb" and match.group("oz") is not None:
+            weight += float(match.group("oz")) / 16.0
+            unit = "lb:oz"
+        weight *= sign
+    except ValueError:
+        return None
+
+    converted = _scale_weight_conversions(weight, unit)
+    return {
+        "type": "scale",
+        "label": label or "display",
+        "weight": weight,
+        "unit": unit,
+        "raw": text,
+        **converted,
+    }
+
+
 def _fluid_delta_p_bar(pump: dict) -> float | None:
     before = _finite_float(pump.get("pressure_before_bar_abs"))
     after = _finite_float(pump.get("pressure_after_bar_abs"))
@@ -481,6 +611,125 @@ def candidate_serial_ports() -> list[str]:
     return unique
 
 
+def _scale_serial_kwargs() -> dict:
+    byte_format = str(SCALE_CFG.get("byte_format") or "8N1").strip().upper()
+    if not serial:
+        return {}
+    bytesize = serial.EIGHTBITS
+    parity = serial.PARITY_NONE
+    stopbits = serial.STOPBITS_ONE
+    if len(byte_format) >= 3:
+        bytesize = serial.SEVENBITS if byte_format[0] == "7" else serial.EIGHTBITS
+        parity = {
+            "N": serial.PARITY_NONE,
+            "O": serial.PARITY_ODD,
+            "E": serial.PARITY_EVEN,
+        }.get(byte_format[1], serial.PARITY_NONE)
+        stopbits = serial.STOPBITS_TWO if byte_format[2] == "2" else serial.STOPBITS_ONE
+    return {
+        "bytesize": bytesize,
+        "parity": parity,
+        "stopbits": stopbits,
+    }
+
+
+def _scale_request_bytes() -> bytes:
+    configured = SCALE_CFG.get("request_command")
+    if configured is None or (str(configured) == "" and SCALE_LAYOUT in {"single", "scp_12", "scp12", "eh_scp"}):
+        if SCALE_LAYOUT in {"single", "scp_12", "scp12"}:
+            configured = "W\\r"
+        elif SCALE_LAYOUT == "eh_scp":
+            configured = "W"
+        else:
+            configured = ""
+    text = str(configured)
+    if not text:
+        return b""
+    return text.encode("ascii", errors="ignore").decode("unicode_escape").encode("ascii", errors="ignore")
+
+
+def _split_scale_frames(buffer: bytes) -> tuple[list[bytes], bytes]:
+    frames: list[bytes] = []
+    start = 0
+    for index, byte in enumerate(buffer):
+        if byte in {0x03, 0x0A, 0x0D}:  # ETX, LF, CR
+            frame = buffer[start:index]
+            if frame.strip(b" \x00\x02\x03\r\n"):
+                frames.append(frame)
+            start = index + 1
+    return frames, buffer[start:]
+
+
+def _update_scale_state(state, parsed: dict) -> None:
+    lock = getattr(state, "scale_lock", None)
+    if lock is None:
+        return
+    now = time.time()
+    now_monotonic = time.monotonic()
+    with lock:
+        current = dict(getattr(state, "scale_latest", None) or {})
+        current.update(parsed)
+        current["t"] = now
+        current["_updated_monotonic"] = now_monotonic
+        state.scale_latest = current
+
+
+def _latest_scale_payload(state) -> dict | None:
+    lock = getattr(state, "scale_lock", None)
+    if lock is None:
+        return None
+    with lock:
+        latest = dict(getattr(state, "scale_latest", None) or {})
+    if not latest:
+        return None
+    updated_monotonic = latest.pop("_updated_monotonic", None)
+    if isinstance(updated_monotonic, (int, float)):
+        age_s = max(0.0, time.monotonic() - float(updated_monotonic))
+        latest["age_s"] = age_s
+        latest["stale"] = age_s > SCALE_STALE_AFTER_S
+    latest.pop("type", None)
+    return latest
+
+
+def _configured_scale_tare_kg() -> float:
+    configured = _finite_float(SCALE_CFG.get("tare_kg"))
+    return configured if configured is not None else 0.0
+
+
+def _get_scale_tare_kg(state) -> float:
+    lock = getattr(state, "scale_tare_lock", None)
+    if lock is None:
+        return _configured_scale_tare_kg()
+    with lock:
+        value = _finite_float(getattr(state, "scale_tare_kg", None))
+    return value if value is not None else 0.0
+
+
+def _set_scale_tare_kg(state, value: float) -> float:
+    if not math.isfinite(value) or value < 0:
+        raise ValueError("Scale tare must be a non-negative number")
+    lock = getattr(state, "scale_tare_lock", None)
+    if lock is None:
+        state.scale_tare_kg = value
+        return value
+    with lock:
+        state.scale_tare_kg = value
+    return value
+
+
+def _attach_scale_payload(state, payload: dict) -> dict:
+    if not isinstance(payload, dict) or payload.get("type") != "telemetry":
+        return payload
+    scale = _latest_scale_payload(state) or {}
+    tare_kg = _get_scale_tare_kg(state)
+    scale["tare_kg"] = tare_kg
+    if not scale:
+        return payload
+    merged = dict(payload)
+    merged["scale"] = scale
+    return merged
+
+
 def _init_logging_state(state) -> None:
     state.log_enabled = False
     state.log_path = None
@@ -531,6 +780,7 @@ def _start_logging(state, filename: Optional[str] = None) -> dict:
         + ["valve", "mode"]
         + [col for col, _, _ in PUMP_LOG_FIELDS]
         + [col for col, _, _ in FLUID_LOG_FIELDS]
+        + [col for col, _, _ in SCALE_LOG_FIELDS]
     )
     writer.writerow(header)
     fh.flush()
@@ -619,6 +869,15 @@ def _maybe_log_telemetry(state, payload: dict) -> None:
         else:
             row.append("nan")
 
+    scale_raw = payload.get("scale")
+    scale = scale_raw if isinstance(scale_raw, dict) else {}
+    for _, key, fmt in SCALE_LOG_FIELDS:
+        value = scale.get(key)
+        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+            row.append(fmt.format(float(value)))
+        else:
+            row.append("nan")
+
     try:
         writer.writerow(row)
         fh.flush()
@@ -661,12 +920,19 @@ async def lifespan(app: FastAPI):
     app.state.ser_thread_stop = threading.Event()
     app.state.ser_handle = None
     app.state.ser_lock = threading.Lock()
+    app.state.scale_thread = None
+    app.state.scale_thread_stop = threading.Event()
+    app.state.scale_lock = threading.Lock()
+    app.state.scale_latest = None
+    app.state.scale_tare_lock = threading.Lock()
+    app.state.scale_tare_kg = _configured_scale_tare_kg()
     _init_logging_state(app.state)
 
     async def broadcaster():
         """Fan-out any message placed on q_live to all connected WS clients."""
         while True:
             raw_msg = await app.state.q_live.get()
+            raw_msg = _attach_scale_payload(app.state, raw_msg)
             msg = _normalize_telemetry_payload(raw_msg)
             _maybe_log_telemetry(app.state, msg)
             dead: list[WebSocket] = []
@@ -818,6 +1084,69 @@ async def lifespan(app: FastAPI):
         else:
           log.error("Serial unavailable and SUP_ALLOW_DUMMY is not enabled; no telemetry will be broadcast.")
 
+    # Optional independent scale reader. This updates state; broadcaster attaches
+    # the latest scale sample to regular controller telemetry packets.
+    if SCALE_ENABLED:
+        scale_port = str(SCALE_CFG.get("port") or "").strip()
+        if not scale_port:
+            log.error("Scale serial enabled but scale.port is empty")
+        elif not serial:
+            log.error("Scale serial enabled but pyserial is not available")
+        else:
+            scale_baud = int(SCALE_CFG.get("baudrate", 9600) or 9600)
+            scale_timeout = float(SCALE_CFG.get("timeout_s", 0.2) or 0.2)
+            scale_request = _scale_request_bytes()
+            scale_request_interval = max(float(SCALE_CFG.get("request_interval_s", 1.0) or 1.0), 0.05)
+
+            def scale_reader(stop_evt: threading.Event):
+                serial_kwargs = _scale_serial_kwargs()
+                try:
+                    with serial.Serial(
+                        scale_port,
+                        baudrate=scale_baud,
+                        timeout=scale_timeout,
+                        **serial_kwargs,
+                    ) as ser:
+                        log.info(
+                            "Scale connected: %s @ %s %s layout=%s",
+                            scale_port,
+                            scale_baud,
+                            SCALE_CFG.get("byte_format", "8N1"),
+                            SCALE_LAYOUT,
+                        )
+                        buffer = b""
+                        next_request_at = 0.0
+                        while not stop_evt.is_set():
+                            if scale_request and time.monotonic() >= next_request_at:
+                                try:
+                                    ser.write(scale_request)
+                                    ser.flush()
+                                except Exception as exc:
+                                    log.error("Scale request failed on %s: %s", scale_port, exc)
+                                next_request_at = time.monotonic() + scale_request_interval
+
+                            chunk = ser.read(128)
+                            if not chunk:
+                                continue
+                            buffer += chunk
+                            frames, buffer = _split_scale_frames(buffer)
+                            if len(buffer) > 2048:
+                                buffer = buffer[-2048:]
+                            for frame in frames:
+                                parsed = parse_scale_payload(frame, layout=SCALE_LAYOUT)
+                                if parsed is not None:
+                                    _update_scale_state(app.state, parsed)
+                except Exception as exc:
+                    log.error("Scale serial failed on %s: %s", scale_port, exc)
+
+            app.state.scale_thread_stop.clear()
+            app.state.scale_thread = threading.Thread(
+                target=scale_reader,
+                args=(app.state.scale_thread_stop,),
+                daemon=True,
+            )
+            app.state.scale_thread.start()
+
     # Hand control to FastAPI
     try:
         yield
@@ -836,6 +1165,12 @@ async def lifespan(app: FastAPI):
             try:
                 app.state.ser_thread_stop.set()
                 app.state.ser_thread.join(timeout=1.0)
+            except Exception:
+                pass
+        if app.state.scale_thread:
+            try:
+                app.state.scale_thread_stop.set()
+                app.state.scale_thread.join(timeout=1.0)
             except Exception:
                 pass
         app.state.ser_handle = None
@@ -894,6 +1229,28 @@ async def api_command(body: dict, authorization: Optional[str] = Header(default=
 
     # No serial available; return 503 but echo the command for debugging
     return JSONResponse({"ok": False, "echo": body, "detail": "serial unavailable"}, status_code=503)
+
+
+@app.get("/api/scale/tare")
+async def api_scale_tare_status(authorization: Optional[str] = Header(default=None)):
+    require_auth(authorization)
+    return {"ok": True, "tare_kg": _get_scale_tare_kg(app.state)}
+
+
+@app.post("/api/scale/tare")
+async def api_scale_tare_set(
+    body: dict = Body(default_factory=dict),
+    authorization: Optional[str] = Header(default=None),
+):
+    require_auth(authorization)
+    value = _finite_float(body.get("tare_kg"))
+    if value is None:
+        raise HTTPException(400, "tare_kg must be a finite number")
+    try:
+        tare_kg = _set_scale_tare_kg(app.state, value)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "tare_kg": tare_kg}
 
 
 @app.get("/api/logging/status")

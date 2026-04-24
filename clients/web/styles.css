@@ -271,6 +271,11 @@ main {
   color: var(--button-danger);
 }
 
+.overview-value[data-tone='warn'],
+.overview-subvalue[data-tone='warn'] {
+  color: #f7b731;
+}
+
 .overview-hint {
   margin: 0;
   font-size: 0.85rem;
@@ -711,6 +716,19 @@ main {
   line-height: 1.45;
   color: var(--text-secondary);
   white-space: pre-wrap;
+}
+
+.auto-status[data-tone='success'] {
+  color: var(--valve-open-text);
+}
+
+.auto-status[data-tone='warn'],
+.auto-status[data-tone='info'] {
+  color: #f7b731;
+}
+
+.auto-status[data-tone='error'] {
+  color: var(--button-danger);
 }
 
 .form-row input:focus {

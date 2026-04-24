@@ -819,13 +819,27 @@ def command_step_summary(
     return work, step_windows, step_summary, settle_cutoff_s
 
 
-def _build_control_phase_summary(hold_candidates: pd.DataFrame, stable_hold: pd.DataFrame) -> pd.DataFrame:
+def _command_label(command_pct: float) -> str:
+    if np.isfinite(command_pct):
+        return f"{command_pct:g}%"
+    return "dominant-command"
+
+
+def _build_control_phase_summary(
+    hold_candidates: pd.DataFrame,
+    stable_hold: pd.DataFrame,
+    command_pct: float,
+) -> pd.DataFrame:
     shutdown_tail = hold_candidates[hold_candidates["time_s"] > stable_hold["time_s"].iloc[-1]].copy()
+    command_label = _command_label(command_pct)
     rows: list[dict[str, float | str | int]] = []
     phase_specs = [
-        ("20% entry / valve closed", hold_candidates[hold_candidates["time_s"] < stable_hold["time_s"].iloc[0]].copy()),
-        ("20% stable hold (mode A, valve=1)", stable_hold.copy()),
-        ("20% shutdown tail", shutdown_tail),
+        (
+            f"{command_label} entry / valve closed",
+            hold_candidates[hold_candidates["time_s"] < stable_hold["time_s"].iloc[0]].copy(),
+        ),
+        (f"{command_label} stable hold (mode A, valve=1)", stable_hold.copy()),
+        (f"{command_label} shutdown tail", shutdown_tail),
     ]
     for label, subset in phase_specs:
         if subset.empty:
@@ -923,7 +937,7 @@ def prepare_flow_log_review(
         stable_hold = hold_candidates.copy()
 
     cooldown = _build_cooldown_frame(stable_hold, valid_temp_cols)
-    control_phase_summary = _build_control_phase_summary(hold_candidates, stable_hold)
+    control_phase_summary = _build_control_phase_summary(hold_candidates, stable_hold, dominant_cmd_pct)
     cooldown_phase_summary = _summarize_cooldown_phases(cooldown)
 
     return FlowLogReview(
@@ -1309,7 +1323,9 @@ def plot_log_overview(review: FlowLogReview) -> plt.Figure:
     ax_cmd.set_ylim(*MAIN_OVERVIEW_PUMP_CMD_YLIM)
     ax_freq.set_ylabel("Pump frequency [Hz]")
     ax_freq.set_ylim(*MAIN_OVERVIEW_PUMP_FREQ_YLIM)
-    ax_cmd.set_title("Full log overview with the stable automatic 20% hold highlighted")
+    ax_cmd.set_title(
+        f"Full log overview with the stable automatic {_command_label(review.dominant_cmd_pct)} hold highlighted"
+    )
     lines = ax_cmd.get_lines()
     ax_cmd.legend(lines, [line.get_label() for line in lines], loc="best")
 
