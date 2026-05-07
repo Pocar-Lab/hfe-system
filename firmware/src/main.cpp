@@ -64,8 +64,6 @@ constexpr uint16_t FLOW_REG_START    = 30000;   // 30000..30008, five floats
 constexpr uint8_t  FLOW_REG_COUNT    = 10;      // 10 x 16-bit regs = 5 x float32
 constexpr float    FLUID_CONC_PCT    = 100.0f;
 constexpr char     FLUID_NAME[]      = "HFE-7200";
-constexpr char     FLOW_TEMPERATURE_UNIT[] = "fahrenheit";
-
 // ── Pressure sensors (0–5.013 V = 10 bar gauge) ─────────────────────────
 // IMPORTANT: these must be analog-capable pins (A0–A15 on the Mega). If you move the wiring,
 // update these constants to the matching Ax (or 54..69) numbers.
@@ -79,7 +77,7 @@ constexpr float   ADC_REF_V           = 5.0f;     // default analog reference (5
 constexpr float   PSI_PER_BAR         = 14.5037738f;
 constexpr float   ATMOSPHERE_BAR      = 1.01325f; // add for absolute pressure display
 constexpr float   PRESSURE_AFTER_ZERO_V = 0.029f; // 1 atm output for after-pump sensor
-constexpr float   PUMP_DELTA_P_ESTOP_BAR = 5.0f;  // emergency-stop threshold for after-before pressure delta
+constexpr float   PUMP_DELTA_P_ESTOP_BAR = 8.0f;  // emergency-stop threshold for after-before pressure delta
 
 // Modbus group M registers (Fuji FRENIC-Mini)
 constexpr uint16_t REG_M09 = 0x0809;  // output frequency (0.01 Hz)
@@ -93,8 +91,9 @@ constexpr uint8_t  N_W_DRIVE_REG = 2; // W05–W06 inclusive
 // ── Control parameters ───────────────────────────────────────────────────
 constexpr float DEFAULT_HFE_GOAL_C           = -110.0f; // °C, LXe reference temperature
 constexpr float DEFAULT_HX_LIMIT_C           = -120.0f; // °C, HFE icing guard at THI
-constexpr float DEFAULT_LN_AUTO_HYSTERESIS_C = 0.5f;    // °C, flow-goal reopen margin
-constexpr float DEFAULT_HX_APPROACH_C        = 10.0f;   // °C, THI reopen margin below flow_temp
+constexpr float DEFAULT_LN_AUTO_HYSTERESIS_C = 0.5f;    // °C, HFE goal reopen margin
+constexpr float DEFAULT_HX_APPROACH_C        = 10.0f;   // °C, THI reopen margin below TMI
+constexpr size_t HFE_AUTO_SENSOR_INDEX       = 7;       // U7 = TMI
 constexpr size_t THI_SENSOR_INDEX            = 8;       // U8 = THI
 
 // ── Valve/override state ─────────────────────────────────────────────────
@@ -158,23 +157,23 @@ static FlowSnapshot g_flow = { false, NAN, NAN, NAN, NAN, NAN, 0 };
 enum AutoCloseReason : uint8_t {
   AUTO_CLOSE_NONE = 0,
   AUTO_CLOSE_MISSING_THI,
-  AUTO_CLOSE_MISSING_FLOW_TEMP,
+  AUTO_CLOSE_MISSING_HFE_TEMP,
   AUTO_CLOSE_THI_LIMIT,
-  AUTO_CLOSE_FLOW_GOAL,
+  AUTO_CLOSE_HFE_GOAL,
 };
 
 struct AutoValveStatus {
   bool thiValid;
-  bool flowValid;
+  bool hfeValid;
   bool closeRequested;
   bool readyToOpen;
   AutoCloseReason reason;
   float thiTempC;
-  float flowTempC;
+  float hfeTempC;
   float thiCloseThresholdC;
-  float flowCloseThresholdC;
+  float hfeCloseThresholdC;
   float thiReopenThresholdC;
-  float flowReopenThresholdC;
+  float hfeReopenThresholdC;
 };
 
 static AutoValveStatus g_auto_status = {
@@ -187,7 +186,7 @@ static AutoValveStatus g_auto_status = {
   NAN,
   DEFAULT_HX_LIMIT_C,
   DEFAULT_HFE_GOAL_C,
-  NAN,  // thiReopenThresholdC resolves from flow_temp at runtime
+  NAN,  // thiReopenThresholdC resolves from TMI at runtime
   DEFAULT_HFE_GOAL_C + DEFAULT_LN_AUTO_HYSTERESIS_C,
 };
 
@@ -670,37 +669,26 @@ static bool parseFloatArgs(const String& cmd, size_t prefixLen, float values[], 
   return *cursor == '\0';
 }
 
-static float flowTemperatureToC(float rawTemp) {
-  if (!isfinite(rawTemp)) return NAN;
-  if (strcmp(FLOW_TEMPERATURE_UNIT, "fahrenheit") == 0) {
-    return (rawTemp - 32.0f) * (5.0f / 9.0f);
-  }
-  if (strcmp(FLOW_TEMPERATURE_UNIT, "kelvin") == 0) {
-    return rawTemp - 273.15f;
-  }
-  return rawTemp;
-}
-
 static const char* autoCloseReasonKey(AutoCloseReason reason) {
   switch (reason) {
     case AUTO_CLOSE_MISSING_THI: return "missing_thi";
-    case AUTO_CLOSE_MISSING_FLOW_TEMP: return "missing_flow_temp";
+    case AUTO_CLOSE_MISSING_HFE_TEMP: return "missing_hfe_temp";
     case AUTO_CLOSE_THI_LIMIT: return "thi_limit";
-    case AUTO_CLOSE_FLOW_GOAL: return "flow_goal";
+    case AUTO_CLOSE_HFE_GOAL: return "hfe_goal";
     default: return "none";
   }
 }
 
-static void updateAutoValveStatusFromValues(float thiTemp, float flowTempC) {
+static void updateAutoValveStatusFromValues(float thiTemp, float hfeTempC) {
   g_auto_status.thiTempC = thiTemp;
-  g_auto_status.flowTempC = flowTempC;
+  g_auto_status.hfeTempC = hfeTempC;
   g_auto_status.thiValid = isfinite(thiTemp);
-  g_auto_status.flowValid = isfinite(flowTempC);
+  g_auto_status.hfeValid = isfinite(hfeTempC);
   g_auto_status.thiCloseThresholdC = g_hx_limit_c;
-  g_auto_status.flowCloseThresholdC = g_hfe_goal_c;
-  // THI reopens when it approaches flow_temp within g_hx_approach_c; flow reopen keeps hysteresis.
-  g_auto_status.thiReopenThresholdC = isfinite(flowTempC) ? (flowTempC - g_hx_approach_c) : NAN;
-  g_auto_status.flowReopenThresholdC = g_hfe_goal_c + g_ln_auto_hysteresis_c;
+  g_auto_status.hfeCloseThresholdC = g_hfe_goal_c;
+  // THI reopens when it approaches TMI within g_hx_approach_c; HFE reopen keeps hysteresis.
+  g_auto_status.thiReopenThresholdC = isfinite(hfeTempC) ? (hfeTempC - g_hx_approach_c) : NAN;
+  g_auto_status.hfeReopenThresholdC = g_hfe_goal_c + g_ln_auto_hysteresis_c;
   g_auto_status.closeRequested = false;
   g_auto_status.readyToOpen = false;
   g_auto_status.reason = AUTO_CLOSE_NONE;
@@ -711,9 +699,9 @@ static void updateAutoValveStatusFromValues(float thiTemp, float flowTempC) {
     return;
   }
 
-  if (!g_auto_status.flowValid) {
+  if (!g_auto_status.hfeValid) {
     g_auto_status.closeRequested = true;
-    g_auto_status.reason = AUTO_CLOSE_MISSING_FLOW_TEMP;
+    g_auto_status.reason = AUTO_CLOSE_MISSING_HFE_TEMP;
     return;
   }
 
@@ -723,16 +711,16 @@ static void updateAutoValveStatusFromValues(float thiTemp, float flowTempC) {
     return;
   }
 
-  if (flowTempC <= g_hfe_goal_c) {
+  if (hfeTempC <= g_hfe_goal_c) {
     g_auto_status.closeRequested = true;
-    g_auto_status.reason = AUTO_CLOSE_FLOW_GOAL;
+    g_auto_status.reason = AUTO_CLOSE_HFE_GOAL;
     return;
   }
 
   g_auto_status.readyToOpen =
     isfinite(g_auto_status.thiReopenThresholdC) &&
     thiTemp >= g_auto_status.thiReopenThresholdC &&
-    flowTempC >= g_auto_status.flowReopenThresholdC;
+    hfeTempC >= g_auto_status.hfeReopenThresholdC;
 }
 
 static void updateAutoValveStatus(const float temps[], size_t count) {
@@ -740,9 +728,12 @@ static void updateAutoValveStatus(const float temps[], size_t count) {
     (temps && count > THI_SENSOR_INDEX && isfinite(temps[THI_SENSOR_INDEX]))
       ? temps[THI_SENSOR_INDEX]
       : NAN;
-  const float flowTempC = g_flow.valid ? flowTemperatureToC(g_flow.temperatureRaw) : NAN;
+  const float hfeTempC =
+    (temps && count > HFE_AUTO_SENSOR_INDEX && isfinite(temps[HFE_AUTO_SENSOR_INDEX]))
+      ? temps[HFE_AUTO_SENSOR_INDEX]
+      : NAN;
 
-  updateAutoValveStatusFromValues(thiTemp, flowTempC);
+  updateAutoValveStatusFromValues(thiTemp, hfeTempC);
   g_auto_status_sampled = true;
 }
 
@@ -763,7 +754,7 @@ static void runAutoValveControl() {
 }
 
 static void refreshAutoStatusAfterTargetChange() {
-  updateAutoValveStatusFromValues(g_auto_status.thiTempC, g_auto_status.flowTempC);
+  updateAutoValveStatusFromValues(g_auto_status.thiTempC, g_auto_status.hfeTempC);
   if (g_mode == AUTO && g_auto_status_sampled) {
     runAutoValveControl();
   }
@@ -1133,17 +1124,29 @@ static void emitTelemetry(const float temps[], size_t count, unsigned long nowMs
   Serial.print(g_hx_approach_c, 2);
   Serial.print(F(",\"thi_temp_c\":"));
   if (g_auto_status.thiValid) Serial.print(g_auto_status.thiTempC, 2); else Serial.print(F("null"));
+  Serial.print(F(",\"hfe_temp_c\":"));
+  if (g_auto_status.hfeValid) Serial.print(g_auto_status.hfeTempC, 2); else Serial.print(F("null"));
+  Serial.print(F(",\"tmi_temp_c\":"));
+  if (g_auto_status.hfeValid) Serial.print(g_auto_status.hfeTempC, 2); else Serial.print(F("null"));
   Serial.print(F(",\"flow_temp_c\":"));
-  if (g_auto_status.flowValid) Serial.print(g_auto_status.flowTempC, 2); else Serial.print(F("null"));
+  if (g_auto_status.hfeValid) Serial.print(g_auto_status.hfeTempC, 2); else Serial.print(F("null"));
   Serial.print(F(",\"thi_valid\":"));
   Serial.print(g_auto_status.thiValid ? F("true") : F("false"));
+  Serial.print(F(",\"hfe_valid\":"));
+  Serial.print(g_auto_status.hfeValid ? F("true") : F("false"));
+  Serial.print(F(",\"tmi_valid\":"));
+  Serial.print(g_auto_status.hfeValid ? F("true") : F("false"));
   Serial.print(F(",\"flow_valid\":"));
-  Serial.print(g_auto_status.flowValid ? F("true") : F("false"));
+  Serial.print(g_auto_status.hfeValid ? F("true") : F("false"));
   Serial.print(F(",\"thi_reopen_c\":"));
   if (isfinite(g_auto_status.thiReopenThresholdC)) Serial.print(g_auto_status.thiReopenThresholdC, 2);
   else Serial.print(F("null"));
+  Serial.print(F(",\"hfe_reopen_c\":"));
+  Serial.print(g_auto_status.hfeReopenThresholdC, 2);
+  Serial.print(F(",\"tmi_reopen_c\":"));
+  Serial.print(g_auto_status.hfeReopenThresholdC, 2);
   Serial.print(F(",\"flow_reopen_c\":"));
-  Serial.print(g_auto_status.flowReopenThresholdC, 2);
+  Serial.print(g_auto_status.hfeReopenThresholdC, 2);
   Serial.print(F(",\"close_requested\":"));
   Serial.print(g_auto_status.closeRequested ? F("true") : F("false"));
   Serial.print(F(",\"ready_to_open\":"));
@@ -1240,7 +1243,7 @@ void loop() {
 
     updateAutoValveStatus(temps_out, MAX_TCS_OUT);
 
-    // Control: LN auto closes on THI/HFE cold limits and reopens once both recover by hysteresis.
+    // Control: LN auto closes on THI/TMI cold limits and reopens once both recover by hysteresis.
     if (g_mode == AUTO) {
       runAutoValveControl();
     } else if (g_mode == FORCE_OPEN)  applyValve(OPEN);

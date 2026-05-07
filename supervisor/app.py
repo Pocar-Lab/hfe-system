@@ -772,7 +772,7 @@ def _start_logging(state, filename: Optional[str] = None) -> dict:
         safe_name = f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     path = RAW_LOG_DIR / safe_name
     fh = path.open("w", newline="", encoding="utf-8")
-    fh.write(f"# tc_calibrated=true,calibration_file={TC_CALIBRATION_PATH.name}\n")
+    fh.write(f"# tc_calibrated=false,ui_calibration_file={TC_CALIBRATION_PATH.name}\n")
     writer = csv.writer(fh)
     header = (
         ["time_s"]
@@ -829,7 +829,7 @@ def _maybe_log_telemetry(state, payload: dict) -> None:
     if not isinstance(payload, dict) or payload.get("type") != "telemetry":
         return
 
-    temps = payload.get("temps") or []
+    temps = payload.get("temps_raw") or payload.get("temps") or []
     if not isinstance(temps, list):
         temps = []
 
@@ -1097,47 +1097,60 @@ async def lifespan(app: FastAPI):
             scale_timeout = float(SCALE_CFG.get("timeout_s", 0.2) or 0.2)
             scale_request = _scale_request_bytes()
             scale_request_interval = max(float(SCALE_CFG.get("request_interval_s", 1.0) or 1.0), 0.05)
+            scale_retry_delay = max(float(SCALE_CFG.get("retry_delay_s", 2.0) or 2.0), 0.1)
 
             def scale_reader(stop_evt: threading.Event):
                 serial_kwargs = _scale_serial_kwargs()
-                try:
-                    with serial.Serial(
-                        scale_port,
-                        baudrate=scale_baud,
-                        timeout=scale_timeout,
-                        **serial_kwargs,
-                    ) as ser:
-                        log.info(
-                            "Scale connected: %s @ %s %s layout=%s",
+                logged_waiting = False
+                while not stop_evt.is_set():
+                    try:
+                        with serial.Serial(
                             scale_port,
-                            scale_baud,
-                            SCALE_CFG.get("byte_format", "8N1"),
-                            SCALE_LAYOUT,
-                        )
-                        buffer = b""
-                        next_request_at = 0.0
-                        while not stop_evt.is_set():
-                            if scale_request and time.monotonic() >= next_request_at:
-                                try:
+                            baudrate=scale_baud,
+                            timeout=scale_timeout,
+                            **serial_kwargs,
+                        ) as ser:
+                            logged_waiting = False
+                            log.info(
+                                "Scale connected: %s @ %s %s layout=%s",
+                                scale_port,
+                                scale_baud,
+                                SCALE_CFG.get("byte_format", "8N1"),
+                                SCALE_LAYOUT,
+                            )
+                            buffer = b""
+                            next_request_at = 0.0
+                            while not stop_evt.is_set():
+                                if scale_request and time.monotonic() >= next_request_at:
                                     ser.write(scale_request)
                                     ser.flush()
-                                except Exception as exc:
-                                    log.error("Scale request failed on %s: %s", scale_port, exc)
-                                next_request_at = time.monotonic() + scale_request_interval
+                                    next_request_at = time.monotonic() + scale_request_interval
 
-                            chunk = ser.read(128)
-                            if not chunk:
-                                continue
-                            buffer += chunk
-                            frames, buffer = _split_scale_frames(buffer)
-                            if len(buffer) > 2048:
-                                buffer = buffer[-2048:]
-                            for frame in frames:
-                                parsed = parse_scale_payload(frame, layout=SCALE_LAYOUT)
-                                if parsed is not None:
-                                    _update_scale_state(app.state, parsed)
-                except Exception as exc:
-                    log.error("Scale serial failed on %s: %s", scale_port, exc)
+                                chunk = ser.read(128)
+                                if not chunk:
+                                    continue
+                                buffer += chunk
+                                frames, buffer = _split_scale_frames(buffer)
+                                if len(buffer) > 2048:
+                                    buffer = buffer[-2048:]
+                                for frame in frames:
+                                    parsed = parse_scale_payload(frame, layout=SCALE_LAYOUT)
+                                    if parsed is not None:
+                                        _update_scale_state(app.state, parsed)
+                    except Exception as exc:
+                        if stop_evt.is_set():
+                            break
+                        if not logged_waiting:
+                            log.error(
+                                "Scale serial unavailable on %s: %s; retrying every %.1fs",
+                                scale_port,
+                                exc,
+                                scale_retry_delay,
+                            )
+                            logged_waiting = True
+                        else:
+                            log.debug("Scale serial still unavailable on %s: %s", scale_port, exc)
+                        stop_evt.wait(scale_retry_delay)
 
             app.state.scale_thread_stop.clear()
             app.state.scale_thread = threading.Thread(

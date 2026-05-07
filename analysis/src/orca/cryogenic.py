@@ -19,6 +19,7 @@ from .logbook import (
     apply_legacy_tc_correction,
     canonicalize_tc_columns,
     is_legacy_wrong_type_log,
+    read_tc_calibrated_csv,
 )
 
 DEFAULT_REFERENCE_TC_COLUMNS: tuple[str, ...] = ("TFO_C", "TTI_C", "TTO_C", "TMI_C", "THM_C", "THI_C")
@@ -84,11 +85,20 @@ DEFAULT_HFE7200_LN2_DIP_RUNS: tuple[dict[str, Any], ...] = (
         "measured_hfe_mass_g": 11.01,
         "warmup_environment": "insulation",
     },
+    {
+        "name": "Apr 29 HFE run",
+        "filename": "log_20260429_144336.csv",
+        "pre_label": "pre-plunge",
+        "color": "C2",
+        "fill_volume_ml": 10.0,
+        "warmup_environment": "insulation",
+    },
 )
 DEFAULT_HFE7200_RATE_RUN_NAMES: tuple[str, ...] = (
     "Apr 14 PM HFE run",
     "Apr 21 HFE run",
     "Apr 23 HFE run",
+    "Apr 29 HFE run",
 )
 # The two Apr 14 runs are the pair whose DSC-like event curves are most
 # coherent with each other in the transition region (pairwise RMSE ~0.015 W/g
@@ -158,6 +168,26 @@ THREE_M_TRANSITION_LABELS: dict[str, str] = {
 GLASS_TRANSITION_SEARCH_RANGE_C: tuple[float, float] = (-175.0, -155.0)
 MEASURED_GLASS_TRANSITION_TEMPERATURE_C = -163.0
 COLD_CRYSTALLIZATION_MIN_TEMPERATURE_C = -150.0
+HFE7200_PHASE_TRANSITION_CANDIDATES: tuple[dict[str, Any], ...] = (
+    {
+        "key": "glass_transition",
+        "label": "Glass transition",
+        "feature": "minimum",
+        "temperature_range_c": GLASS_TRANSITION_SEARCH_RANGE_C,
+    },
+    {
+        "key": "cold_crystallization",
+        "label": "Cold crystallization",
+        "feature": "maximum",
+        "temperature_range_c": (-150.0, -110.0),
+    },
+    {
+        "key": "melt_temperature",
+        "label": "Melt temperature",
+        "feature": "minimum",
+        "temperature_range_c": (-125.0, -90.0),
+    },
+)
 
 
 @dataclass(frozen=True)
@@ -253,6 +283,7 @@ class Hfe7200Ln2DipReview:
     setup_table: pd.DataFrame
     calibration_summary: pd.DataFrame
     phase_summary: pd.DataFrame
+    phase_transition_summary: pd.DataFrame
     three_m_curve: pd.DataFrame
     combined_dsc_curve: pd.DataFrame
     smoothing_window_s: float
@@ -427,8 +458,14 @@ def _find_repo_root(start: Path | None = None) -> Path:
     raise FileNotFoundError("Could not locate the repository root from the current working directory.")
 
 
-def _load_hfe_run(path: Path, *, room_reference_c: float, smoothing_window_s: float) -> pd.DataFrame:
-    frame = canonicalize_tc_columns(pd.read_csv(path, comment="#")).copy()
+def _load_hfe_run(
+    path: Path,
+    *,
+    room_reference_c: float,
+    smoothing_window_s: float,
+    tc_calibration_path: str | Path | None = None,
+) -> pd.DataFrame:
+    frame = read_tc_calibrated_csv(path, calibration_path=tc_calibration_path).copy()
     if is_legacy_wrong_type_log(path):
         frame, correction_note = apply_legacy_tc_correction(
             frame,
@@ -438,8 +475,15 @@ def _load_hfe_run(path: Path, *, room_reference_c: float, smoothing_window_s: fl
         )
         correction_method = "legacy K-to-T reconstruction"
     else:
-        correction_note = "Logged thermocouple values used as-is."
-        correction_method = "logged calibration"
+        if frame.attrs.get("tc_calibration_applied_from_log_metadata"):
+            correction_note = (
+                "Restored raw thermocouple values calibrated in memory from "
+                f"{Path(str(frame.attrs.get('tc_calibration_source'))).name}."
+            )
+            correction_method = "restored-log calibration"
+        else:
+            correction_note = "Logged thermocouple values used as-is."
+            correction_method = "logged calibration"
         frame.attrs["legacy_tc_room_anchor_samples"] = np.nan
         frame.attrs["legacy_tc_room_anchor_offsets_c"] = {}
 
@@ -1029,6 +1073,136 @@ def _combine_dsc_summaries(
     return combined
 
 
+def _temperature_window_extreme_point(
+    temperature_c: pd.Series | np.ndarray,
+    heat_flow_w_g: pd.Series | np.ndarray,
+    *,
+    temperature_range_c: tuple[float, float],
+    feature: str,
+) -> tuple[float, float]:
+    temperature_values = np.asarray(temperature_c, dtype=float)
+    heat_flow_values = np.asarray(heat_flow_w_g, dtype=float)
+    low_c, high_c = temperature_range_c
+    finite_mask = (
+        np.isfinite(temperature_values)
+        & np.isfinite(heat_flow_values)
+        & (temperature_values >= float(low_c))
+        & (temperature_values <= float(high_c))
+    )
+    if not finite_mask.any():
+        return float("nan"), float("nan")
+
+    window_temperatures = temperature_values[finite_mask]
+    window_heat_flow = heat_flow_values[finite_mask]
+    if feature == "minimum":
+        selected_index = int(np.argmin(window_heat_flow))
+    elif feature == "maximum":
+        selected_index = int(np.argmax(window_heat_flow))
+    else:
+        raise ValueError(f"Unsupported phase-transition feature: {feature!r}")
+    return float(window_temperatures[selected_index]), float(window_heat_flow[selected_index])
+
+
+def _phase_transition_candidate_rows(
+    *,
+    source_name: str,
+    source_type: str,
+    temperature_c: pd.Series | np.ndarray,
+    heat_flow_w_g: pd.Series | np.ndarray,
+) -> list[dict[str, str | float]]:
+    temperature_values = np.asarray(temperature_c, dtype=float)
+    heat_flow_values = np.asarray(heat_flow_w_g, dtype=float)
+    finite_curve_mask = np.isfinite(temperature_values) & np.isfinite(heat_flow_values)
+    if finite_curve_mask.any():
+        curve_min_c = float(np.nanmin(temperature_values[finite_curve_mask]))
+        curve_max_c = float(np.nanmax(temperature_values[finite_curve_mask]))
+    else:
+        curve_min_c = float("nan")
+        curve_max_c = float("nan")
+
+    rows: list[dict[str, str | float]] = []
+    for transition in HFE7200_PHASE_TRANSITION_CANDIDATES:
+        low_c, high_c = tuple(float(value) for value in transition["temperature_range_c"])
+        feature = str(transition["feature"])
+        candidate_temperature_c, candidate_heat_flow_w_g = _temperature_window_extreme_point(
+            temperature_values,
+            heat_flow_values,
+            temperature_range_c=(low_c, high_c),
+            feature=feature,
+        )
+
+        if np.isfinite(candidate_temperature_c):
+            fully_covered = (
+                np.isfinite(curve_min_c)
+                and np.isfinite(curve_max_c)
+                and curve_min_c <= low_c
+                and curve_max_c >= high_c
+            )
+            status = "candidate" if fully_covered else "candidate (partial window)"
+        else:
+            status = "not covered"
+
+        rows.append(
+            {
+                "Source": source_name,
+                "Source type": source_type,
+                "Transition": str(transition["label"]),
+                "Candidate temperature [°C]": candidate_temperature_c,
+                "Heat flow [W/g]": candidate_heat_flow_w_g,
+                "Search window [°C]": f"{low_c:.0f} to {high_c:.0f}",
+                "Feature": feature,
+                "Status": status,
+            }
+        )
+    return rows
+
+
+def _build_hfe7200_phase_transition_summary(
+    runs: Mapping[str, Hfe7200Ln2DipRun],
+    run_names: Sequence[str],
+    *,
+    combined_dsc_curve: pd.DataFrame,
+    combined_source_name: str,
+    three_m_curve: pd.DataFrame,
+) -> pd.DataFrame:
+    rows: list[dict[str, str | float]] = []
+    for name in run_names:
+        curve = _raw_dsc_plot_curve(runs[name])
+        rows.extend(
+            _phase_transition_candidate_rows(
+                source_name=name,
+                source_type="run",
+                temperature_c=curve.get("temperature_c", pd.Series(dtype=float)),
+                heat_flow_w_g=curve.get("smoothed_heat_flow_w_g", pd.Series(dtype=float)),
+            )
+        )
+
+    if not combined_dsc_curve.empty:
+        rows.extend(
+            _phase_transition_candidate_rows(
+                source_name=combined_source_name,
+                source_type="measured mean",
+                temperature_c=combined_dsc_curve["temperature_c"],
+                heat_flow_w_g=combined_dsc_curve["mean_heat_flow_w_g"],
+            )
+        )
+
+    if (
+        not three_m_curve.empty
+        and "linear_baseline_referenced_heat_flow_w_g" in three_m_curve
+    ):
+        rows.extend(
+            _phase_transition_candidate_rows(
+                source_name="3M reference",
+                source_type="reference",
+                temperature_c=three_m_curve["temperature_C"],
+                heat_flow_w_g=three_m_curve["linear_baseline_referenced_heat_flow_w_g"],
+            )
+        )
+
+    return pd.DataFrame(rows)
+
+
 def _parse_log_timestamp(log_path: Path) -> pd.Timestamp:
     return pd.to_datetime(log_path.stem.removeprefix("log_"), format="%Y%m%d_%H%M%S")
 
@@ -1045,6 +1219,7 @@ def _format_tc_offsets(offsets: dict[str, float]) -> str:
 def prepare_hfe7200_ln2_dip_review(
     *,
     repo_root: str | Path | None = None,
+    tc_calibration_path: str | Path | None = None,
     ln2_reference_c: float = -196.0,
     smoothing_window_s: float = 10.0,
     room_reference_f: float = 68.5,
@@ -1076,9 +1251,11 @@ def prepare_hfe7200_ln2_dip_review(
             log_path,
             room_reference_c=room_reference_c,
             smoothing_window_s=smoothing_window_s,
+            tc_calibration_path=tc_calibration_path,
         )
         run_paths[str(config["name"])] = log_path
         run_configs[str(config["name"])] = dict(config)
+    run_order = tuple(str(config["name"]) for config in DEFAULT_HFE7200_LN2_DIP_RUNS)
 
     apr8_study = prepare_cryogenic_dip_study(run_paths["Apr 8 HFE run"], smoothing_window_s=smoothing_window_s)
     apr10_study = prepare_cryogenic_dip_study(run_paths["Apr 10 HFE run"], smoothing_window_s=smoothing_window_s)
@@ -1226,6 +1403,32 @@ def prepare_hfe7200_ln2_dip_review(
             "insulation_band_start_time_min": None,
         },
     }
+    generic_phase_names: list[str] = []
+    for name in run_order:
+        if name in phase_metadata:
+            continue
+        frame = prepared_frames[name]
+        cooldown_start_index = _first_sustained_rate_run_start_index(
+            frame,
+            start_index=0,
+            rate_threshold_c_s=-0.15,
+            confirm_samples=5,
+            direction="negative",
+        )
+        turnaround_index = _first_sustained_rate_run_start_index(
+            frame,
+            start_index=int(frame["probe_calibrated_smooth_c"].idxmin()),
+            rate_threshold_c_s=0.01,
+            confirm_samples=5,
+            direction="positive",
+        )
+        phase_metadata[name] = {
+            "cooldown_start_index": cooldown_start_index,
+            "turnaround_index": turnaround_index,
+            "air_band_end_time_min": None,
+            "insulation_band_start_time_min": None,
+        }
+        generic_phase_names.append(name)
 
     prepared_frames["Apr 8 HFE run"] = _add_phase_labels(
         prepared_frames["Apr 8 HFE run"],
@@ -1269,6 +1472,13 @@ def prepare_hfe7200_ln2_dip_review(
         cooldown_start_index=0,
         turnaround_index=turnaround_index_23,
     )
+    for name in generic_phase_names:
+        prepared_frames[name] = _add_phase_labels(
+            prepared_frames[name],
+            pre_label=str(run_configs[name]["pre_label"]),
+            cooldown_start_index=int(phase_metadata[name]["cooldown_start_index"]),
+            turnaround_index=int(phase_metadata[name]["turnaround_index"]),
+        )
 
     apr9_warmup_after_min = prepared_frames["Apr 9 HFE run"].loc[int(phase_metadata["Apr 9 HFE run"]["turnaround_index"]) :].copy()
     apr9_air_band_end_index = int(
@@ -1306,9 +1516,13 @@ def prepare_hfe7200_ln2_dip_review(
     phase_metadata["Apr 23 HFE run"]["insulation_band_start_time_min"] = float(
         prepared_frames["Apr 23 HFE run"].loc[turnaround_index_23, "t_rel_min"]
     )
+    for name in generic_phase_names:
+        if str(run_configs[name]["warmup_environment"]) == "insulation":
+            phase_metadata[name]["insulation_band_start_time_min"] = float(
+                prepared_frames[name].loc[int(phase_metadata[name]["turnaround_index"]), "t_rel_min"]
+            )
 
     runs: dict[str, Hfe7200Ln2DipRun] = {}
-    run_order = tuple(config["name"] for config in DEFAULT_HFE7200_LN2_DIP_RUNS)
     for name in run_order:
         config = run_configs[name]
         frame = prepared_frames[name].copy()
@@ -1413,12 +1627,27 @@ def prepare_hfe7200_ln2_dip_review(
     three_m_curve["baseline_referenced_heat_flow_w_g"] = (
         three_m_curve["heat_flow_W_per_g"] - three_m_reference_level_w_g
     )
+    three_m_curve["linear_baseline_referenced_heat_flow_w_g"] = (
+        three_m_curve["heat_flow_W_per_g"].to_numpy(dtype=float)
+        - _linear_fit_values(
+            three_m_curve.loc[three_m_baseline_mask, "temperature_C"],
+            three_m_curve.loc[three_m_baseline_mask, "heat_flow_W_per_g"],
+            three_m_curve["temperature_C"],
+        )
+    )
 
     combined_dsc_curve = _combine_dsc_summaries(
         runs,
         comparison_run_names,
         rate_sigma_window_s=smoothing_window_s,
         bin_width_c=dsc_bin_width_c,
+    )
+    phase_transition_summary = _build_hfe7200_phase_transition_summary(
+        runs,
+        run_order,
+        combined_dsc_curve=combined_dsc_curve,
+        combined_source_name=f"{comparison_start:%b} {comparison_start.day}+ mean",
+        three_m_curve=three_m_curve,
     )
 
     setup_table = pd.DataFrame(
@@ -1477,6 +1706,7 @@ def prepare_hfe7200_ln2_dip_review(
         setup_table=setup_table,
         calibration_summary=calibration_summary,
         phase_summary=phase_summary,
+        phase_transition_summary=phase_transition_summary,
         three_m_curve=three_m_curve,
         combined_dsc_curve=combined_dsc_curve,
         smoothing_window_s=float(smoothing_window_s),

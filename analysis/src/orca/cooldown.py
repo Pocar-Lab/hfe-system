@@ -1,49 +1,46 @@
-"""Cooldown modeling helpers for the HFE system.
+"""Simple cooldown and heat-exchanger sizing model for the HFE system.
 
-This module packages the reusable solver logic that previously lived in the
-legacy standalone cooldown scripts.
+The dissertation-facing model in this module intentionally keeps one clear
+physics picture:
 
-Geometry and leak calibration sources inside this repository:
+* the HFE-side tube area sets the heat-exchanger length required to reject a
+  steady heat leak without dropping the tube wall below the HFE freezing limit;
+* the cooldown transient is a one-node energy balance with an analytic
+  exponential solution.
 
-* ``analysis/notebooks/HFE_cooldown.ipynb`` carries the legacy geometry and
-  notes that those dimensions were validated on hardware.
-* That same notebook anchors the insulated ambient heat leak to a measured
-  warm-up value of 15.5846 W at 278.256 K.
-* ``clients/web/index.html`` and ``firmware/src/main.cpp`` both note an HFE
-  pump ceiling of about 4.0 L/min, which is used here as a sanity bound for
-  the default flow scenarios.
-
-Important remaining modeling uncertainties:
-
-* The liquid inventory now uses 3 L in the tank and about 1 L in the piping,
-  per the latest confirmed system values. The exposed piping length that
-  should go with that 1 L inventory is still not fully pinned down in the repo.
-* The stagnant HFE film thickness around the coil remains a tunable
-  assumption. The legacy notebook used 15 mm; the packaged default here is
-  2 mm because the larger film suppressed HX UA enough that the calibrated
-  model could not reproduce the cooldown behavior implied elsewhere in the repo.
-* The external HFE-side coil coupling is intentionally modeled with a simple
-  flow-only HTC surrogate anchored near the nominal operating point. The repo
-  no longer carries a viscosity-driven transport correlation in this model.
-* The model now uses 6 m of 1/4 in OD stainless tubing for the heat
-  exchanger, which gives about 0.12 m^2 of external area and matches the
-  latest confirmed hardware description.
+Older multi-scenario LN2 wetting and gas-side cooldown machinery was removed
+from the public ORCA API so this file has one model to audit and cite.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
-from typing import Iterable, Mapping, Sequence
+from typing import Iterable
 
 import numpy as np
+import pandas as pd
 
 from .leaks import hfe_liquid_density_kg_m3
 
 SECONDS_PER_MINUTE = 60.0
 SECONDS_PER_HOUR = 3600.0
 KELVIN_OFFSET = 273.15
-DEFAULT_PUMP_MAX_FLOW_LPM = 4.0
+HFE7000_CP_INTERCEPT_J_KG_K = 1_223.2
+HFE7000_CP_SLOPE_J_KG_K_PER_C = 3.0803
+HFE7200_CP_REFERENCE_TEMP_C = 25.0
+HFE7200_CP_REFERENCE_J_KG_K = 1_220.0
+# Low-temperature HFE-family HTC basis from HowLowCanYouGo.pdf:
+# HFE-7000 at -90 C has Pr ~= 46 and k = 0.0974 W/m/K. The document reports
+# Re ~= 3900 in a coiled exchanger; Re = 50 is used here as a deliberately
+# weak-mixing design basis for a conservative nominal HFE-side coefficient.
+HFE_HTC_BASIS_REYNOLDS = 50.0
+HFE_HTC_BASIS_PRANDTL = 46.0
+HFE_HTC_BASIS_THERMAL_CONDUCTIVITY_W_M_K = 0.0974
+HFE_HTC_NOMINAL_W_M2_K = 250.0
+HFE_TANK_VOLUME_L = 2.8
+HFE_ADDITIONAL_VOLUME_L = 0.260
+HFE_INVENTORY_VOLUME_L = HFE_TANK_VOLUME_L + HFE_ADDITIONAL_VOLUME_L
 
 
 @dataclass(frozen=True)
@@ -118,17 +115,16 @@ class CylindricalTank:
 
 @dataclass(frozen=True)
 class SystemModel:
-    """System geometry and fixed material properties."""
+    """System geometry and fixed material properties used by ORCA notebooks."""
 
     process_loop: StraightTube
     tank: CylindricalTank
     heat_exchanger: StraightTube
     tank_liquid_volume_m3: float | None = 0.003
     piping_liquid_volume_m3: float | None = 0.001
-    initial_temp_k: float = 298.0
-    target_temp_k: float = 170.0
+    initial_temp_k: float = 298.15
+    target_temp_k: float = 163.15
     ambient_temp_k: float = 293.0
-    ln2_saturation_temp_k: float = 77.0
     steel_conductivity_w_mk: float = 16.0
     steel_cp_j_kgk: float = 500.0
     steel_density_kg_m3: float = 7_850.0
@@ -136,14 +132,6 @@ class SystemModel:
     ambient_air_htc_w_m2k: float = 8.0
     insulation_thickness_m: float = 0.05
     insulation_conductivity_w_mk: float = 0.03
-    stagnant_hfe_film_thickness_m: float = 0.002
-    hfe_liquid_conductivity_w_mk: float = 0.065
-    outer_hfe_htc_reference_w_m2k: float = 120.0
-    outer_hfe_htc_reference_flow_lpm: float = 2.0
-    outer_hfe_htc_flow_exponent: float = 0.5
-    ln2_density_kg_m3: float = 808.0
-    ln2_latent_heat_j_kg: float = 1.99e5
-    n2_gas_cp_j_kgk: float = 1_040.0
     insulated_heat_leak_reference_w: float = 15.5846
     insulated_heat_leak_reference_temp_k: float = 278.2561715481171
 
@@ -177,56 +165,115 @@ class SystemModel:
 
 
 @dataclass(frozen=True)
-class CooldownScenario:
-    """Cooldown-case definition."""
+class CooldownDesignInputs:
+    """Inputs for the single HFE cooldown and HX sizing model."""
 
-    name: str
-    h_boil_w_m2k: float
-    h_gas_w_m2k: float
-    ln2_flow_lpm: float
-    hfe_flow_lpm: float
-    use_insulation: bool = True
-    notes: str = ""
-
-
-@dataclass(frozen=True)
-class PowerBreakdown:
-    """Instantaneous heat-transfer terms at one bulk temperature."""
-
-    ambient_heat_w: float
-    removed_heat_w: float
-    liquid_ua_w_per_k: float
-    gas_ua_w_per_k: float
-    outer_hfe_htc_w_m2k: float
-    liquid_coil_fraction: float
-    latent_capacity_w: float
-    gas_sensible_capacity_w: float
+    room_temp_c: float = 25.0
+    ambient_temp_c: float = 25.0
+    target_temp_c: float = -110.0
+    freeze_temp_c: float = -121.0
+    heat_leak_target_w: float = 200.0
+    hfe_volume_l: float = HFE_INVENTORY_VOLUME_L
+    hfe_cp_25c_j_kg_k: float = HFE7200_CP_REFERENCE_J_KG_K
+    hfe_htc_w_m2_k: float = HFE_HTC_NOMINAL_W_M2_K
+    installed_length_m: float = 6.0
+    tube_outer_diameter_m: float = 0.25 * 0.0254
+    tube_wall_thickness_m: float = 0.05 * 0.0254
+    ln2_latent_heat_j_kg: float = 165.0e3
+    ln2_density_kg_m3: float = 808.0
+    time_point_count: int = 1_200
+    minimum_plot_time_min: float = 60.0
 
 
 @dataclass(frozen=True)
-class CooldownResult:
-    """Time history from one cooldown simulation."""
+class HfeHtcBasis:
+    """Traceable basis for the nominal HFE-side heat-transfer coefficient."""
 
-    scenario: CooldownScenario
-    time_s: np.ndarray
-    bulk_temp_k: np.ndarray
-    ambient_heat_w: np.ndarray
-    removed_heat_w: np.ndarray
-    liquid_ua_w_per_k: np.ndarray
-    gas_ua_w_per_k: np.ndarray
-    outer_hfe_htc_w_m2k: np.ndarray
-    liquid_coil_fraction: np.ndarray
-    delivered_ln2_kg: np.ndarray
-    absorbed_energy_j: np.ndarray
+    reynolds: float
+    prandtl: float
+    thermal_conductivity_w_m_k: float
+    diameter_m: float
+    nusselt: float
+    h_basis_w_m2_k: float
+    nominal_h_w_m2_k: float
+
+
+@dataclass(frozen=True)
+class CooldownDesignResult:
+    """Result and time history from the analytic cooldown model."""
+
+    inputs: CooldownDesignInputs
+    hfe_volume_l: float
+    hfe_mass_room_kg: float
+    hfe_mass_target_kg: float
+    hfe_cp_room_j_kg_k: float
+    hfe_cp_target_j_kg_k: float
+    hfe_cp_effective_j_kg_k: float
+    hfe_volumetric_heat_capacity_effective_j_m3_k: float
+    installed_area_m2: float
+    required_length_m: float
+    critical_hfe_htc_w_m2_k: float
+    required_hfe_ua_w_per_k: float
+    installed_hfe_ua_w_per_k: float
+    installed_margin: float
+    wall_temp_at_200w_c: float
     ambient_ua_w_per_k: float
-    turnover_time_s: float
-    ln2_latent_heat_j_kg: float
-    theoretical_min_ln2_kg: float
-    time_to_target_min: float
+    equilibrium_temp_c: float
+    thermal_time_constant_s: float
+    time_to_target_s: float
+    energy_to_target_j: float
+    ln2_to_target_kg: float
+    ln2_hold_mass_flow_kg_s: float
+    ln2_hold_volume_flow_lpm: float
+    time_s: np.ndarray
+    bulk_temp_c: np.ndarray
+    heat_leak_w: np.ndarray
+    hx_power_w: np.ndarray
+    absorbed_energy_j: np.ndarray
+    ln2_consumed_kg: np.ndarray
+
+    @property
+    def time_to_target_min(self) -> float:
+        return self.time_to_target_s / SECONDS_PER_MINUTE
+
+    @property
+    def thermal_time_constant_min(self) -> float:
+        return self.thermal_time_constant_s / SECONDS_PER_MINUTE
+
+    @property
+    def energy_to_target_mj(self) -> float:
+        return self.energy_to_target_j / 1e6
+
+    @property
+    def hfe_mass_cold_equivalent_kg(self) -> float:
+        """Backward-compatible name for the target-temperature volume mass."""
+
+        return self.hfe_mass_target_kg
+
+    @property
+    def room_reference_volume_l(self) -> float:
+        """Backward-compatible name for the fixed inventory volume."""
+
+        return self.hfe_volume_l
+
+    def history_frame(self) -> pd.DataFrame:
+        """Return the simulated time history as a dataframe for plotting."""
+
+        return pd.DataFrame(
+            {
+                "time_s": self.time_s,
+                "time_min": self.time_s / SECONDS_PER_MINUTE,
+                "bulk_temp_c": self.bulk_temp_c,
+                "heat_leak_w": self.heat_leak_w,
+                "hx_power_w": self.hx_power_w,
+                "absorbed_energy_j": self.absorbed_energy_j,
+                "ln2_consumed_kg": self.ln2_consumed_kg,
+            }
+        )
 
 
 def default_system_model() -> SystemModel:
-    """Return the current repository-default cooldown geometry."""
+    """Return the current repository-default HFE geometry."""
 
     return SystemModel(
         process_loop=StraightTube(
@@ -235,7 +282,7 @@ def default_system_model() -> SystemModel:
             wall_thickness_m=0.035 * 0.0254,
         ),
         tank=CylindricalTank(
-            height_m=0.5,
+            height_m=0.489,
             inner_diameter_m=0.096,
             wall_thickness_m=0.0055,
         ),
@@ -244,54 +291,27 @@ def default_system_model() -> SystemModel:
             outer_diameter_m=0.25 * 0.0254,
             wall_thickness_m=0.05 * 0.0254,
         ),
+        tank_liquid_volume_m3=HFE_TANK_VOLUME_L * 1e-3,
+        piping_liquid_volume_m3=HFE_ADDITIONAL_VOLUME_L * 1e-3,
     )
 
 
-def default_scenarios() -> tuple[CooldownScenario, ...]:
-    """Return a small uncertainty sweep bounded by the current pump range."""
+def default_cooldown_design_inputs() -> CooldownDesignInputs:
+    """Return the nominal dissertation cooldown-design inputs."""
 
-    scenarios = (
-        CooldownScenario(
-            name="Optimistic",
-            h_boil_w_m2k=1_500.0,
-            h_gas_w_m2k=15.0,
-            ln2_flow_lpm=0.08,
-            hfe_flow_lpm=3.0,
-            use_insulation=True,
-            notes="Higher HFE mixing and higher continuous LN2 feed.",
-        ),
-        CooldownScenario(
-            name="Nominal",
-            h_boil_w_m2k=1_000.0,
-            h_gas_w_m2k=10.0,
-            ln2_flow_lpm=0.05,
-            hfe_flow_lpm=2.0,
-            use_insulation=True,
-            notes="Legacy nominal recirculation case.",
-        ),
-        CooldownScenario(
-            name="Pessimistic",
-            h_boil_w_m2k=500.0,
-            h_gas_w_m2k=5.0,
-            ln2_flow_lpm=0.03,
-            hfe_flow_lpm=0.8,
-            use_insulation=True,
-            notes="Lower mixing, weaker boiling, and lower LN2 feed.",
-        ),
-    )
-    for scenario in scenarios:
-        if scenario.hfe_flow_lpm > DEFAULT_PUMP_MAX_FLOW_LPM:
-            raise ValueError(
-                f"Scenario {scenario.name} exceeds the configured pump ceiling of "
-                f"{DEFAULT_PUMP_MAX_FLOW_LPM:.1f} L/min."
-            )
-    return scenarios
+    return CooldownDesignInputs()
 
 
 def lpm_to_m3_s(flow_lpm: float) -> float:
     """Convert volumetric flow from L/min to m^3/s."""
 
     return max(flow_lpm, 0.0) / 60_000.0
+
+
+def celsius_to_kelvin(temp_c: float) -> float:
+    """Convert C to K."""
+
+    return float(temp_c + KELVIN_OFFSET)
 
 
 def kelvin_to_celsius(temp_k: float) -> float:
@@ -301,15 +321,187 @@ def kelvin_to_celsius(temp_k: float) -> float:
 
 
 def hfe_density_kg_m3(temp_k: float) -> float:
-    """Return the ORCA HFE density fit in kg/m^3."""
+    """Return the HFE-7200 liquid density fit in kg/m^3."""
 
     return hfe_liquid_density_kg_m3(kelvin_to_celsius(temp_k))
 
 
-def hfe_specific_heat_j_kgk(temp_k: float) -> float:
-    """Approximate HFE-7200 liquid heat capacity."""
+def hfe7000_specific_heat_j_kg_k(temp_c: float | np.ndarray) -> float | np.ndarray:
+    """Return the HFE-7000 liquid heat-capacity fit used as a temperature shape."""
 
-    return max(900.0, 1_220.0 + 1.5 * (temp_k - 298.0))
+    cp = HFE7000_CP_INTERCEPT_J_KG_K + HFE7000_CP_SLOPE_J_KG_K_PER_C * np.asarray(
+        temp_c,
+        dtype=float,
+    )
+    if np.ndim(cp) == 0:
+        return float(cp)
+    return cp
+
+
+def hfe7200_specific_heat_j_kg_k(
+    temp_c: float | np.ndarray,
+    *,
+    reference_cp_25c_j_kg_k: float = HFE7200_CP_REFERENCE_J_KG_K,
+) -> float | np.ndarray:
+    """Return HFE-7200 heat capacity scaled from the HFE-7000 temperature trend."""
+
+    scale = reference_cp_25c_j_kg_k / hfe7000_specific_heat_j_kg_k(
+        HFE7200_CP_REFERENCE_TEMP_C
+    )
+    cp = scale * np.asarray(hfe7000_specific_heat_j_kg_k(temp_c), dtype=float)
+    if np.ndim(cp) == 0:
+        return float(cp)
+    return cp
+
+
+def hfe7200_average_specific_heat_j_kg_k(
+    start_temp_c: float,
+    end_temp_c: float,
+    *,
+    reference_cp_25c_j_kg_k: float = HFE7200_CP_REFERENCE_J_KG_K,
+) -> float:
+    """Return the path-average HFE-7200 heat capacity for a linear cp(T) fit."""
+
+    cp_start = hfe7200_specific_heat_j_kg_k(
+        start_temp_c,
+        reference_cp_25c_j_kg_k=reference_cp_25c_j_kg_k,
+    )
+    cp_end = hfe7200_specific_heat_j_kg_k(
+        end_temp_c,
+        reference_cp_25c_j_kg_k=reference_cp_25c_j_kg_k,
+    )
+    return float(0.5 * (cp_start + cp_end))
+
+
+def hfe_mass_from_volume_kg(volume_l: float, temp_c: float) -> float:
+    """Return HFE-7200 mass for a liquid volume at the requested temperature."""
+
+    if volume_l <= 0.0:
+        raise ValueError("volume_l must be positive.")
+
+    return float(volume_l * 1e-3 * hfe_liquid_density_kg_m3(temp_c))
+
+
+def hfe7200_average_volumetric_heat_capacity_j_m3_k(
+    start_temp_c: float,
+    end_temp_c: float,
+    *,
+    reference_cp_25c_j_kg_k: float = HFE7200_CP_REFERENCE_J_KG_K,
+    samples: int = 512,
+) -> float:
+    """Return path-average rho*cp for fixed-volume HFE-7200 inventory."""
+
+    if samples < 2:
+        raise ValueError("samples must be at least 2.")
+
+    temps_c = np.linspace(end_temp_c, start_temp_c, samples)
+    density_kg_m3 = np.asarray(
+        [hfe_liquid_density_kg_m3(temp_c) for temp_c in temps_c],
+        dtype=float,
+    )
+    cp_j_kg_k = np.asarray(
+        hfe7200_specific_heat_j_kg_k(
+            temps_c,
+            reference_cp_25c_j_kg_k=reference_cp_25c_j_kg_k,
+        ),
+        dtype=float,
+    )
+    return float(
+        np.trapz(density_kg_m3 * cp_j_kg_k, temps_c)
+        / (start_temp_c - end_temp_c)
+    )
+
+
+def hfe_specific_heat_j_kgk(temp_k: float) -> float:
+    """Return scaled HFE-7200 liquid heat capacity for a temperature in K."""
+
+    return float(hfe7200_specific_heat_j_kg_k(kelvin_to_celsius(temp_k)))
+
+
+def churchill_bernstein_cylinder_nusselt(
+    reynolds: float,
+    prandtl: float,
+) -> float:
+    """Return the Churchill-Bernstein average Nu for cylinder cross-flow."""
+
+    if reynolds <= 0.0:
+        raise ValueError("reynolds must be positive.")
+    if prandtl <= 0.0:
+        raise ValueError("prandtl must be positive.")
+
+    return float(
+        0.3
+        + (
+            0.62
+            * reynolds**0.5
+            * prandtl ** (1.0 / 3.0)
+            / (1.0 + (0.4 / prandtl) ** (2.0 / 3.0)) ** 0.25
+            * (1.0 + (reynolds / 282_000.0) ** (5.0 / 8.0)) ** (4.0 / 5.0)
+        )
+    )
+
+
+def cylinder_crossflow_htc_w_m2_k(
+    *,
+    reynolds: float,
+    prandtl: float,
+    thermal_conductivity_w_m_k: float,
+    diameter_m: float,
+) -> float:
+    """Return h from Nu = hD/k for cross-flow over a circular cylinder."""
+
+    if thermal_conductivity_w_m_k <= 0.0:
+        raise ValueError("thermal_conductivity_w_m_k must be positive.")
+    if diameter_m <= 0.0:
+        raise ValueError("diameter_m must be positive.")
+
+    nusselt = churchill_bernstein_cylinder_nusselt(reynolds, prandtl)
+    return float(nusselt * thermal_conductivity_w_m_k / diameter_m)
+
+
+def nominal_hfe_htc_basis_w_m2_k(
+    tube_outer_diameter_m: float,
+    *,
+    reynolds: float = HFE_HTC_BASIS_REYNOLDS,
+    prandtl: float = HFE_HTC_BASIS_PRANDTL,
+    thermal_conductivity_w_m_k: float = HFE_HTC_BASIS_THERMAL_CONDUCTIVITY_W_M_K,
+) -> float:
+    """Return the low-Re cylinder cross-flow basis for the nominal HFE HTC."""
+
+    return cylinder_crossflow_htc_w_m2_k(
+        reynolds=reynolds,
+        prandtl=prandtl,
+        thermal_conductivity_w_m_k=thermal_conductivity_w_m_k,
+        diameter_m=tube_outer_diameter_m,
+    )
+
+
+def nominal_hfe_htc_basis(
+    tube_outer_diameter_m: float,
+    *,
+    reynolds: float = HFE_HTC_BASIS_REYNOLDS,
+    prandtl: float = HFE_HTC_BASIS_PRANDTL,
+    thermal_conductivity_w_m_k: float = HFE_HTC_BASIS_THERMAL_CONDUCTIVITY_W_M_K,
+    nominal_h_w_m2_k: float = HFE_HTC_NOMINAL_W_M2_K,
+) -> HfeHtcBasis:
+    """Return the complete low-Re basis for the nominal HFE HTC."""
+
+    nusselt = churchill_bernstein_cylinder_nusselt(reynolds, prandtl)
+    h_basis = cylinder_crossflow_htc_w_m2_k(
+        reynolds=reynolds,
+        prandtl=prandtl,
+        thermal_conductivity_w_m_k=thermal_conductivity_w_m_k,
+        diameter_m=tube_outer_diameter_m,
+    )
+    return HfeHtcBasis(
+        reynolds=float(reynolds),
+        prandtl=float(prandtl),
+        thermal_conductivity_w_m_k=float(thermal_conductivity_w_m_k),
+        diameter_m=float(tube_outer_diameter_m),
+        nusselt=nusselt,
+        h_basis_w_m2_k=h_basis,
+        nominal_h_w_m2_k=float(nominal_h_w_m2_k),
+    )
 
 
 def thermal_capacity_j_per_k(model: SystemModel, temp_k: float) -> float:
@@ -328,7 +520,7 @@ def cooldown_energy_j(
     end_temp_k: float | None = None,
     samples: int = 512,
 ) -> float:
-    """Return the energy that must be removed to cool from start to end."""
+    """Return the sensible energy removed to cool from start to end."""
 
     start = model.initial_temp_k if start_temp_k is None else float(start_temp_k)
     end = model.target_temp_k if end_temp_k is None else float(end_temp_k)
@@ -344,14 +536,15 @@ def theoretical_min_ln2_kg(
     *,
     start_temp_k: float | None = None,
     end_temp_k: float | None = None,
+    ln2_latent_heat_j_kg: float = 165.0e3,
 ) -> float:
-    """Latent-only lower bound on LN2 mass required for the cooldown."""
+    """Latent-only lower bound on LN2 mass for a sensible cooldown."""
 
     return cooldown_energy_j(
         model,
         start_temp_k=start_temp_k,
         end_temp_k=end_temp_k,
-    ) / model.ln2_latent_heat_j_kg
+    ) / ln2_latent_heat_j_kg
 
 
 def cylinder_ambient_ua_geometry_w_per_k(
@@ -366,7 +559,7 @@ def cylinder_ambient_ua_geometry_w_per_k(
     insulation_thickness_m: float,
     insulation_conductivity_w_mk: float,
 ) -> float:
-    """Ambient UA for a cylindrical shell using the side-wall resistance model."""
+    """Ambient UA for a cylindrical shell using a side-wall resistance model."""
 
     if length_m <= 0.0 or inner_radius_m <= 0.0:
         return 0.0
@@ -429,7 +622,7 @@ def ambient_leak_ua_geometry_w_per_k(model: SystemModel, *, use_insulation: bool
 
 
 def ambient_leak_ua_w_per_k(model: SystemModel, *, use_insulation: bool) -> float:
-    """Return the ambient leak UA calibrated to the measured insulated warm-up."""
+    """Return ambient leak UA calibrated to the measured insulated warm-up."""
 
     geometry_insulated = ambient_leak_ua_geometry_w_per_k(model, use_insulation=True)
     geometry_requested = ambient_leak_ua_geometry_w_per_k(
@@ -445,283 +638,300 @@ def ambient_leak_ua_w_per_k(model: SystemModel, *, use_insulation: bool) -> floa
     return geometry_requested * scale
 
 
-def coil_outer_hfe_htc_w_m2k(
-    model: SystemModel,
+def scale_hfe_mass_to_temperature(
+    room_reference_mass_kg: float,
     *,
-    temp_k: float,
-    hfe_flow_lpm: float,
+    room_temp_c: float,
+    target_temp_c: float,
 ) -> float:
-    """Estimate the HFE-side external HTC around the coil.
+    """Scale a room-temperature HFE mass by density ratio to a target temperature.
 
-    The simplified cooldown model keeps only a flow-rate dependence here.
-    ``temp_k`` is retained for API compatibility with existing callers but is
-    not used in the surrogate.
+    This is a fixed-volume equivalent mass, not a statement that physical mass is
+    created during cooldown. It is useful when the known inventory is tied to a
+    room-temperature filled volume.
     """
 
-    if hfe_flow_lpm <= 0.0:
-        return 0.0
+    if room_reference_mass_kg <= 0.0:
+        raise ValueError("room_reference_mass_kg must be positive.")
 
-    reference_flow_lpm = max(model.outer_hfe_htc_reference_flow_lpm, 1e-12)
-    flow_ratio = max(hfe_flow_lpm, 0.0) / reference_flow_lpm
-    return model.outer_hfe_htc_reference_w_m2k * flow_ratio**model.outer_hfe_htc_flow_exponent
+    rho_room = hfe_liquid_density_kg_m3(room_temp_c)
+    rho_target = hfe_liquid_density_kg_m3(target_temp_c)
+    return float(room_reference_mass_kg * rho_target / rho_room)
 
 
-def hx_ua_w_per_k(
-    model: SystemModel,
+def required_hx_length_m(
     *,
-    temp_k: float,
-    hfe_flow_lpm: float,
-    ln2_side_htc_w_m2k: float,
-) -> tuple[float, float]:
-    """Return the full-coil UA and outer HFE HTC."""
+    heat_leak_w: float,
+    tube_outer_diameter_m: float,
+    hfe_htc_w_m2_k: float,
+    target_temp_c: float,
+    freeze_temp_c: float,
+) -> float:
+    """Return tube length required by the HFE-side wall-temperature limit."""
 
-    if ln2_side_htc_w_m2k <= 0.0:
-        return 0.0, 0.0
+    delta_t_k = target_temp_c - freeze_temp_c
+    if heat_leak_w <= 0.0:
+        raise ValueError("heat_leak_w must be positive.")
+    if tube_outer_diameter_m <= 0.0:
+        raise ValueError("tube_outer_diameter_m must be positive.")
+    if hfe_htc_w_m2_k <= 0.0:
+        raise ValueError("hfe_htc_w_m2_k must be positive.")
+    if delta_t_k <= 0.0:
+        raise ValueError("target_temp_c must be warmer than freeze_temp_c.")
 
-    hx = model.heat_exchanger
-    outer_htc = coil_outer_hfe_htc_w_m2k(
-        model,
-        temp_k=temp_k,
-        hfe_flow_lpm=hfe_flow_lpm,
-    )
-    if outer_htc <= 0.0:
-        return 0.0, outer_htc
-
-    resistance_inner = 1.0 / max(ln2_side_htc_w_m2k * hx.internal_area_m2, 1e-12)
-    resistance_wall = math.log(hx.outer_diameter_m / hx.inner_diameter_m) / (
-        2.0 * math.pi * model.steel_conductivity_w_mk * hx.length_m
-    )
-    stagnant_outer_radius_m = hx.outer_radius_m + model.stagnant_hfe_film_thickness_m
-    resistance_stagnant_hfe = math.log(stagnant_outer_radius_m / hx.outer_radius_m) / (
-        2.0 * math.pi * model.hfe_liquid_conductivity_w_mk * hx.length_m
-    )
-    resistance_outer = 1.0 / max(outer_htc * hx.external_area_m2, 1e-12)
-
-    resistance_total = (
-        resistance_inner + resistance_wall + resistance_stagnant_hfe + resistance_outer
-    )
-    return 1.0 / resistance_total, outer_htc
+    return float(heat_leak_w / (math.pi * tube_outer_diameter_m * hfe_htc_w_m2_k * delta_t_k))
 
 
-def power_breakdown(
-    model: SystemModel,
-    scenario: CooldownScenario,
+def _energy_removed_j(
     *,
-    temp_k: float,
-) -> PowerBreakdown:
-    """Return instantaneous heat-flow terms for the current bulk temperature."""
-
-    ambient_ua = ambient_leak_ua_w_per_k(model, use_insulation=scenario.use_insulation)
-    liquid_ua, outer_htc = hx_ua_w_per_k(
-        model,
-        temp_k=temp_k,
-        hfe_flow_lpm=scenario.hfe_flow_lpm,
-        ln2_side_htc_w_m2k=scenario.h_boil_w_m2k,
-    )
-    gas_ua, _ = hx_ua_w_per_k(
-        model,
-        temp_k=temp_k,
-        hfe_flow_lpm=scenario.hfe_flow_lpm,
-        ln2_side_htc_w_m2k=scenario.h_gas_w_m2k,
+    ua_hx_w_per_k: float,
+    wall_temp_k: float,
+    initial_temp_k: float,
+    equilibrium_temp_k: float,
+    tau_s: float,
+    time_s: np.ndarray | float,
+) -> np.ndarray:
+    time = np.asarray(time_s, dtype=float)
+    return ua_hx_w_per_k * (
+        (equilibrium_temp_k - wall_temp_k) * time
+        + (initial_temp_k - equilibrium_temp_k)
+        * tau_s
+        * (1.0 - np.exp(-time / tau_s))
     )
 
-    delta_t_hx_k = max(temp_k - model.ln2_saturation_temp_k, 0.0)
-    latent_capacity_w = (
-        lpm_to_m3_s(scenario.ln2_flow_lpm)
-        * model.ln2_density_kg_m3
-        * model.ln2_latent_heat_j_kg
-    )
-    gas_sensible_capacity_w = (
-        lpm_to_m3_s(scenario.ln2_flow_lpm)
-        * model.ln2_density_kg_m3
-        * model.n2_gas_cp_j_kgk
-        * delta_t_hx_k
-    )
-    liquid_heat_limit_w = liquid_ua * delta_t_hx_k
 
-    if liquid_heat_limit_w <= latent_capacity_w + 1e-12:
-        liquid_fraction = 1.0 if delta_t_hx_k > 0.0 else 0.0
-        removed_heat_w = liquid_heat_limit_w
+def simulate_simple_cooldown(
+    inputs: CooldownDesignInputs | None = None,
+    *,
+    hfe_htc_w_m2_k: float | None = None,
+    installed_length_m: float | None = None,
+    time_s: Iterable[float] | None = None,
+) -> CooldownDesignResult:
+    """Run the analytic one-node cooldown model."""
+
+    base = default_cooldown_design_inputs() if inputs is None else inputs
+    selected = replace(
+        base,
+        hfe_htc_w_m2_k=base.hfe_htc_w_m2_k if hfe_htc_w_m2_k is None else hfe_htc_w_m2_k,
+        installed_length_m=base.installed_length_m if installed_length_m is None else installed_length_m,
+    )
+
+    target_temp_k = celsius_to_kelvin(selected.target_temp_c)
+    freeze_temp_k = celsius_to_kelvin(selected.freeze_temp_c)
+    ambient_temp_k = celsius_to_kelvin(selected.ambient_temp_c)
+    initial_temp_k = celsius_to_kelvin(selected.room_temp_c)
+
+    hfe_mass_room_kg = hfe_mass_from_volume_kg(
+        selected.hfe_volume_l,
+        selected.room_temp_c,
+    )
+    hfe_mass_target_kg = hfe_mass_from_volume_kg(
+        selected.hfe_volume_l,
+        selected.target_temp_c,
+    )
+    hfe_cp_room = float(
+        hfe7200_specific_heat_j_kg_k(
+            selected.room_temp_c,
+            reference_cp_25c_j_kg_k=selected.hfe_cp_25c_j_kg_k,
+        )
+    )
+    hfe_cp_target = float(
+        hfe7200_specific_heat_j_kg_k(
+            selected.target_temp_c,
+            reference_cp_25c_j_kg_k=selected.hfe_cp_25c_j_kg_k,
+        )
+    )
+    hfe_cp_effective = hfe7200_average_specific_heat_j_kg_k(
+        selected.room_temp_c,
+        selected.target_temp_c,
+        reference_cp_25c_j_kg_k=selected.hfe_cp_25c_j_kg_k,
+    )
+    hfe_volumetric_heat_capacity_effective = (
+        hfe7200_average_volumetric_heat_capacity_j_m3_k(
+            selected.room_temp_c,
+            selected.target_temp_c,
+            reference_cp_25c_j_kg_k=selected.hfe_cp_25c_j_kg_k,
+        )
+    )
+    installed_area_m2 = math.pi * selected.tube_outer_diameter_m * selected.installed_length_m
+    required_length = required_hx_length_m(
+        heat_leak_w=selected.heat_leak_target_w,
+        tube_outer_diameter_m=selected.tube_outer_diameter_m,
+        hfe_htc_w_m2_k=selected.hfe_htc_w_m2_k,
+        target_temp_c=selected.target_temp_c,
+        freeze_temp_c=selected.freeze_temp_c,
+    )
+    required_hfe_ua = selected.heat_leak_target_w / (
+        selected.target_temp_c - selected.freeze_temp_c
+    )
+    installed_hfe_ua = selected.hfe_htc_w_m2_k * installed_area_m2
+    critical_hfe_htc = required_hfe_ua / installed_area_m2
+    installed_margin = installed_hfe_ua / required_hfe_ua
+    wall_temp_at_200w_c = selected.target_temp_c - (
+        selected.heat_leak_target_w / installed_hfe_ua
+    )
+    ambient_ua = selected.heat_leak_target_w / (
+        selected.ambient_temp_c - selected.target_temp_c
+    )
+    heat_capacity = selected.hfe_volume_l * 1e-3 * hfe_volumetric_heat_capacity_effective
+    total_ua = ambient_ua + installed_hfe_ua
+    equilibrium_temp_k = (
+        ambient_ua * ambient_temp_k + installed_hfe_ua * freeze_temp_k
+    ) / total_ua
+    tau_s = heat_capacity / total_ua
+
+    if initial_temp_k <= target_temp_k:
+        time_to_target_s = 0.0
+    elif equilibrium_temp_k < target_temp_k:
+        time_to_target_s = float(
+            -tau_s
+            * math.log(
+                (target_temp_k - equilibrium_temp_k)
+                / (initial_temp_k - equilibrium_temp_k)
+            )
+        )
     else:
-        liquid_fraction = max(
-            0.0,
-            min(1.0, latent_capacity_w / max(liquid_heat_limit_w, 1e-12)),
-        )
-        gas_heat_limit_w = (1.0 - liquid_fraction) * gas_ua * delta_t_hx_k
-        removed_heat_w = latent_capacity_w + min(gas_heat_limit_w, gas_sensible_capacity_w)
+        time_to_target_s = math.nan
 
-    ambient_heat_w = ambient_ua * (model.ambient_temp_k - temp_k)
-    return PowerBreakdown(
-        ambient_heat_w=ambient_heat_w,
-        removed_heat_w=removed_heat_w,
-        liquid_ua_w_per_k=liquid_ua,
-        gas_ua_w_per_k=gas_ua,
-        outer_hfe_htc_w_m2k=outer_htc,
-        liquid_coil_fraction=liquid_fraction,
-        latent_capacity_w=latent_capacity_w,
-        gas_sensible_capacity_w=gas_sensible_capacity_w,
+    if math.isfinite(time_to_target_s):
+        energy_to_target_j = float(
+            _energy_removed_j(
+                ua_hx_w_per_k=installed_hfe_ua,
+                wall_temp_k=freeze_temp_k,
+                initial_temp_k=initial_temp_k,
+                equilibrium_temp_k=equilibrium_temp_k,
+                tau_s=tau_s,
+                time_s=time_to_target_s,
+            )
+        )
+    else:
+        energy_to_target_j = math.nan
+
+    if time_s is None:
+        plot_end_s = selected.minimum_plot_time_min * SECONDS_PER_MINUTE
+        if math.isfinite(time_to_target_s):
+            plot_end_s = max(plot_end_s, 1.25 * time_to_target_s)
+        time_array = np.linspace(0.0, plot_end_s, selected.time_point_count)
+    else:
+        time_array = np.asarray(list(time_s), dtype=float)
+        if time_array.ndim != 1:
+            raise ValueError("time_s must be one-dimensional.")
+        if np.any(time_array < 0.0):
+            raise ValueError("time_s must be non-negative.")
+
+    temp_k = equilibrium_temp_k + (initial_temp_k - equilibrium_temp_k) * np.exp(
+        -time_array / tau_s
     )
+    heat_leak_w = ambient_ua * (ambient_temp_k - temp_k)
+    hx_power_w = installed_hfe_ua * (temp_k - freeze_temp_k)
+    absorbed_energy_j = _energy_removed_j(
+        ua_hx_w_per_k=installed_hfe_ua,
+        wall_temp_k=freeze_temp_k,
+        initial_temp_k=initial_temp_k,
+        equilibrium_temp_k=equilibrium_temp_k,
+        tau_s=tau_s,
+        time_s=time_array,
+    )
+    ln2_consumed_kg = absorbed_energy_j / selected.ln2_latent_heat_j_kg
 
+    ln2_hold_mass_flow_kg_s = selected.heat_leak_target_w / selected.ln2_latent_heat_j_kg
+    ln2_hold_volume_flow_lpm = ln2_hold_mass_flow_kg_s / selected.ln2_density_kg_m3 * 60_000.0
 
-def simulate_cooldown(
-    scenario: CooldownScenario,
-    *,
-    model: SystemModel | None = None,
-    dt_s: float = 1.0,
-    max_time_h: float = 6.0,
-    stop_on_target: bool = False,
-) -> CooldownResult:
-    """Run the lumped cooldown simulation for one scenario."""
-
-    if dt_s <= 0.0:
-        raise ValueError("dt_s must be positive.")
-    system = default_system_model() if model is None else model
-    total_steps = int(math.ceil(max_time_h * SECONDS_PER_HOUR / dt_s))
-    ln2_mass_flow_kg_s = lpm_to_m3_s(scenario.ln2_flow_lpm) * system.ln2_density_kg_m3
-    ambient_ua = ambient_leak_ua_w_per_k(system, use_insulation=scenario.use_insulation)
-    turnover_time_s = system.loop_turnover_time_s(scenario.hfe_flow_lpm)
-
-    time_s = np.zeros(total_steps + 1, dtype=float)
-    bulk_temp_k = np.zeros_like(time_s)
-    ambient_heat_w = np.zeros_like(time_s)
-    removed_heat_w = np.zeros_like(time_s)
-    liquid_ua_w_per_k = np.zeros_like(time_s)
-    gas_ua_w_per_k = np.zeros_like(time_s)
-    outer_hfe_htc_w_m2k = np.zeros_like(time_s)
-    liquid_coil_fraction = np.zeros_like(time_s)
-    delivered_ln2_kg = np.zeros_like(time_s)
-    absorbed_energy_j = np.zeros_like(time_s)
-
-    temp_k = system.initial_temp_k
-    bulk_temp_k[0] = temp_k
-    initial_power = power_breakdown(system, scenario, temp_k=temp_k)
-    ambient_heat_w[0] = initial_power.ambient_heat_w
-    removed_heat_w[0] = initial_power.removed_heat_w
-    liquid_ua_w_per_k[0] = initial_power.liquid_ua_w_per_k
-    gas_ua_w_per_k[0] = initial_power.gas_ua_w_per_k
-    outer_hfe_htc_w_m2k[0] = initial_power.outer_hfe_htc_w_m2k
-    liquid_coil_fraction[0] = initial_power.liquid_coil_fraction
-
-    last_index = total_steps
-    time_to_target_min = float("nan")
-
-    for step in range(1, total_steps + 1):
-        current_power = power_breakdown(system, scenario, temp_k=temp_k)
-        total_capacity_j_per_k = thermal_capacity_j_per_k(system, temp_k)
-        next_temp_k = temp_k + (
-            (current_power.ambient_heat_w - current_power.removed_heat_w) * dt_s
-            / total_capacity_j_per_k
-        )
-        next_temp_k = max(system.ln2_saturation_temp_k, next_temp_k)
-
-        previous_temp_k = temp_k
-        temp_k = next_temp_k
-
-        time_s[step] = step * dt_s
-        bulk_temp_k[step] = temp_k
-        ambient_heat_w[step] = current_power.ambient_heat_w
-        removed_heat_w[step] = current_power.removed_heat_w
-        liquid_ua_w_per_k[step] = current_power.liquid_ua_w_per_k
-        gas_ua_w_per_k[step] = current_power.gas_ua_w_per_k
-        outer_hfe_htc_w_m2k[step] = current_power.outer_hfe_htc_w_m2k
-        liquid_coil_fraction[step] = current_power.liquid_coil_fraction
-        delivered_ln2_kg[step] = delivered_ln2_kg[step - 1] + ln2_mass_flow_kg_s * dt_s
-        absorbed_energy_j[step] = (
-            absorbed_energy_j[step - 1] + current_power.removed_heat_w * dt_s
-        )
-
-        crossed_target = (
-            math.isnan(time_to_target_min)
-            and previous_temp_k > system.target_temp_k
-            and temp_k <= system.target_temp_k
-        )
-        if crossed_target:
-            fraction = 1.0
-            if previous_temp_k != temp_k:
-                fraction = (previous_temp_k - system.target_temp_k) / (
-                    previous_temp_k - temp_k
-                )
-            time_to_target_min = ((step - 1) + fraction) * dt_s / SECONDS_PER_MINUTE
-            if stop_on_target:
-                last_index = step
-                break
-
-    end = last_index + 1
-    return CooldownResult(
-        scenario=scenario,
-        time_s=time_s[:end].copy(),
-        bulk_temp_k=bulk_temp_k[:end].copy(),
-        ambient_heat_w=ambient_heat_w[:end].copy(),
-        removed_heat_w=removed_heat_w[:end].copy(),
-        liquid_ua_w_per_k=liquid_ua_w_per_k[:end].copy(),
-        gas_ua_w_per_k=gas_ua_w_per_k[:end].copy(),
-        outer_hfe_htc_w_m2k=outer_hfe_htc_w_m2k[:end].copy(),
-        liquid_coil_fraction=liquid_coil_fraction[:end].copy(),
-        delivered_ln2_kg=delivered_ln2_kg[:end].copy(),
-        absorbed_energy_j=absorbed_energy_j[:end].copy(),
+    return CooldownDesignResult(
+        inputs=selected,
+        hfe_volume_l=selected.hfe_volume_l,
+        hfe_mass_room_kg=hfe_mass_room_kg,
+        hfe_mass_target_kg=hfe_mass_target_kg,
+        hfe_cp_room_j_kg_k=hfe_cp_room,
+        hfe_cp_target_j_kg_k=hfe_cp_target,
+        hfe_cp_effective_j_kg_k=hfe_cp_effective,
+        hfe_volumetric_heat_capacity_effective_j_m3_k=hfe_volumetric_heat_capacity_effective,
+        installed_area_m2=installed_area_m2,
+        required_length_m=required_length,
+        critical_hfe_htc_w_m2_k=critical_hfe_htc,
+        required_hfe_ua_w_per_k=required_hfe_ua,
+        installed_hfe_ua_w_per_k=installed_hfe_ua,
+        installed_margin=installed_margin,
+        wall_temp_at_200w_c=wall_temp_at_200w_c,
         ambient_ua_w_per_k=ambient_ua,
-        turnover_time_s=turnover_time_s,
-        ln2_latent_heat_j_kg=system.ln2_latent_heat_j_kg,
-        theoretical_min_ln2_kg=theoretical_min_ln2_kg(system),
-        time_to_target_min=time_to_target_min,
+        equilibrium_temp_c=kelvin_to_celsius(equilibrium_temp_k),
+        thermal_time_constant_s=tau_s,
+        time_to_target_s=time_to_target_s,
+        energy_to_target_j=energy_to_target_j,
+        ln2_to_target_kg=energy_to_target_j / selected.ln2_latent_heat_j_kg,
+        ln2_hold_mass_flow_kg_s=ln2_hold_mass_flow_kg_s,
+        ln2_hold_volume_flow_lpm=ln2_hold_volume_flow_lpm,
+        time_s=time_array,
+        bulk_temp_c=temp_k - KELVIN_OFFSET,
+        heat_leak_w=heat_leak_w,
+        hx_power_w=hx_power_w,
+        absorbed_energy_j=absorbed_energy_j,
+        ln2_consumed_kg=ln2_consumed_kg,
     )
 
 
-def simulate_suite(
-    scenarios: Sequence[CooldownScenario] | None = None,
-    *,
-    model: SystemModel | None = None,
-    dt_s: float = 1.0,
-    max_time_h: float = 6.0,
-    stop_on_target: bool = False,
-) -> dict[str, CooldownResult]:
-    """Run a group of cooldown scenarios."""
+def cooldown_sensitivity_table(
+    hfe_htc_values_w_m2_k: Iterable[float],
+    inputs: CooldownDesignInputs | None = None,
+) -> pd.DataFrame:
+    """Return HX length and cooldown metrics across HFE-side HTC values."""
 
-    selected = default_scenarios() if scenarios is None else tuple(scenarios)
-    return {
-        scenario.name: simulate_cooldown(
-            scenario,
-            model=model,
-            dt_s=dt_s,
-            max_time_h=max_time_h,
-            stop_on_target=stop_on_target,
-        )
-        for scenario in selected
-    }
-
-
-def summarize_results(
-    results: Mapping[str, CooldownResult] | Iterable[CooldownResult],
-) -> list[dict[str, float | str | bool]]:
-    """Return a compact tabular summary for notebook use."""
-
-    if isinstance(results, Mapping):
-        result_iterable = results.values()
-    else:
-        result_iterable = results
-
-    rows: list[dict[str, float | str | bool]] = []
-    for result in result_iterable:
+    base = default_cooldown_design_inputs() if inputs is None else inputs
+    rows: list[dict[str, float]] = []
+    for hfe_htc in hfe_htc_values_w_m2_k:
+        result = simulate_simple_cooldown(base, hfe_htc_w_m2_k=float(hfe_htc))
         rows.append(
             {
-                "scenario": result.scenario.name,
-                "insulated": result.scenario.use_insulation,
-                "hfe_flow_lpm": result.scenario.hfe_flow_lpm,
-                "ln2_flow_lpm": result.scenario.ln2_flow_lpm,
-                "ambient_ua_w_per_k": result.ambient_ua_w_per_k,
-                "initial_liquid_ua_w_per_k": result.liquid_ua_w_per_k[0],
-                "turnover_time_min": result.turnover_time_s / SECONDS_PER_MINUTE,
+                "h_HFE_W_m2_K": float(hfe_htc),
+                "required_length_m": result.required_length_m,
+                "installed_margin": result.installed_margin,
+                "wall_temp_at_200w_C": result.wall_temp_at_200w_c,
+                "equilibrium_temp_C": result.equilibrium_temp_c,
                 "time_to_target_min": result.time_to_target_min,
-                "reached_target": math.isfinite(result.time_to_target_min),
-                "final_temp_k": float(result.bulk_temp_k[-1]),
-                "delivered_ln2_kg": float(result.delivered_ln2_kg[-1]),
-                "absorbed_energy_kj": float(result.absorbed_energy_j[-1] / 1e3),
-                "absorbed_energy_latent_equiv_kg": float(
-                    result.absorbed_energy_j[-1] / result.ln2_latent_heat_j_kg
-                ),
-                "theoretical_min_ln2_kg": result.theoretical_min_ln2_kg,
-                "max_removed_heat_w": float(np.max(result.removed_heat_w)),
-                "max_ambient_heat_w": float(np.max(result.ambient_heat_w)),
+                "energy_to_target_MJ": result.energy_to_target_mj,
+                "ln2_to_target_kg": result.ln2_to_target_kg,
             }
         )
-    return rows
+    return pd.DataFrame(rows)
+
+
+__all__ = [
+    "SECONDS_PER_MINUTE",
+    "SECONDS_PER_HOUR",
+    "KELVIN_OFFSET",
+    "HFE_TANK_VOLUME_L",
+    "HFE_ADDITIONAL_VOLUME_L",
+    "HFE_INVENTORY_VOLUME_L",
+    "StraightTube",
+    "CylindricalTank",
+    "SystemModel",
+    "CooldownDesignInputs",
+    "HfeHtcBasis",
+    "CooldownDesignResult",
+    "default_system_model",
+    "default_cooldown_design_inputs",
+    "lpm_to_m3_s",
+    "celsius_to_kelvin",
+    "kelvin_to_celsius",
+    "hfe_density_kg_m3",
+    "hfe7000_specific_heat_j_kg_k",
+    "hfe7200_specific_heat_j_kg_k",
+    "hfe7200_average_specific_heat_j_kg_k",
+    "hfe_mass_from_volume_kg",
+    "hfe7200_average_volumetric_heat_capacity_j_m3_k",
+    "hfe_specific_heat_j_kgk",
+    "churchill_bernstein_cylinder_nusselt",
+    "cylinder_crossflow_htc_w_m2_k",
+    "nominal_hfe_htc_basis",
+    "nominal_hfe_htc_basis_w_m2_k",
+    "thermal_capacity_j_per_k",
+    "cooldown_energy_j",
+    "theoretical_min_ln2_kg",
+    "cylinder_ambient_ua_geometry_w_per_k",
+    "ambient_leak_ua_geometry_w_per_k",
+    "ambient_leak_ua_w_per_k",
+    "scale_hfe_mass_to_temperature",
+    "required_hx_length_m",
+    "simulate_simple_cooldown",
+    "cooldown_sensitivity_table",
+]

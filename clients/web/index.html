@@ -280,7 +280,7 @@
               <label>
                 HFE Goal (°C)
                 <input type="number" id="hfe-goal-input" step="0.1" inputmode="decimal" value="-110.0" />
-                <span class="form-hint">Close the LN valve once the flow-meter HFE temperature reaches this target. LXe reference temperature: -110 °C.</span>
+                <span class="form-hint">Close the LN valve once TMI reaches this HFE target. LXe reference temperature: -110 °C.</span>
               </label>
               <label>
                 HX Limit / THI Limit (°C)
@@ -290,12 +290,12 @@
               <label>
                 HX Approach (°C)
                 <input type="number" id="hx-approach-input" step="0.1" min="0" inputmode="decimal" value="10.0" />
-                <span class="form-hint">Reopen the LN valve once THI warms to within this margin of the flow-meter HFE temperature (THI ≥ flow − approach).</span>
+                <span class="form-hint">Reopen the LN valve once THI warms to within this margin of TMI (THI ≥ TMI − approach).</span>
               </label>
               <label>
                 Hysteresis (°C)
                 <input type="number" id="auto-hysteresis-input" step="0.1" min="0" inputmode="decimal" value="0.5" />
-                <span class="form-hint">Reopen the LN valve only after the flow-meter temperature warms back above the HFE goal by this amount.</span>
+                <span class="form-hint">Reopen the LN valve only after TMI warms back above the HFE goal by this amount.</span>
               </label>
               <p id="auto-mode-status" class="auto-status muted">Awaiting auto-mode telemetry…</p>
               <div class="form-actions">

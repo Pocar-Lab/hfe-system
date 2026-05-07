@@ -31,6 +31,10 @@ logs/
 !data/processed/*.csv
 !data/processed/**/*.csv
 
+# Raw-data archives and local backup snapshots
+data/raw/archive/
+data/raw/**/_pump_log_backups/
+
 # Notebook checkpoints
 # Track notebooks in git; ignore only Jupyter's transient checkpoint files.
 .ipynb_checkpoints/

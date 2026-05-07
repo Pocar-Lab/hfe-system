@@ -367,6 +367,19 @@
     return Number.isFinite(num) ? `${num.toFixed(digits)} °C` : '—';
   }
 
+  function firstFiniteControlNumber(...values) {
+    for (const value of values) {
+      if (value === null || value === undefined || value === '') {
+        continue;
+      }
+      const num = finiteNumber(value);
+      if (Number.isFinite(num)) {
+        return num;
+      }
+    }
+    return NaN;
+  }
+
   function updateAutoModeStatus(control) {
     if (!autoModeStatusEl) {
       return;
@@ -383,10 +396,18 @@
       return;
     }
 
-    const thiTempC = finiteNumber(autoControl.thi_temp_c);
-    const flowTempC = finiteNumber(autoControl.flow_temp_c);
-    const thiReopenC = finiteNumber(autoControl.thi_reopen_c);
-    const flowReopenC = finiteNumber(autoControl.flow_reopen_c);
+    const thiTempC = firstFiniteControlNumber(autoControl.thi_temp_c);
+    const hfeTempC = firstFiniteControlNumber(
+      autoControl.hfe_temp_c,
+      autoControl.tmi_temp_c,
+      autoControl.flow_temp_c,
+    );
+    const thiReopenC = firstFiniteControlNumber(autoControl.thi_reopen_c);
+    const hfeReopenC = firstFiniteControlNumber(
+      autoControl.hfe_reopen_c,
+      autoControl.tmi_reopen_c,
+      autoControl.flow_reopen_c,
+    );
     const closeRequested = coerceOnOff(autoControl.close_requested) === true;
     const readyToOpen = coerceOnOff(autoControl.ready_to_open) === true;
     const autoCloseLatched = coerceOnOff(autoControl.auto_close_latched) === true;
@@ -411,20 +432,24 @@
     } else if (closeRequested) {
       if (reason === 'missing_thi') {
         text = 'Auto is holding the LN valve closed because THI telemetry is unavailable.';
-      } else if (reason === 'missing_flow_temp') {
-        text = 'Auto is holding the LN valve closed because flow-meter temperature telemetry is unavailable.';
+      } else if (
+        reason === 'missing_hfe_temp' ||
+        reason === 'missing_tmi' ||
+        reason === 'missing_flow_temp'
+      ) {
+        text = 'Auto is holding the LN valve closed because TMI telemetry is unavailable.';
       } else if (reason === 'thi_limit') {
         text = `Auto is holding the LN valve closed because THI is ${formatTemperatureSummary(
           thiTempC,
         )}, at or below the HX limit ${formatTemperatureSummary(currentHxLimitC)}. It can reopen once THI rises above ${formatTemperatureSummary(
           thiReopenC,
-        )} (flow − ${formatTemperatureSummary(currentHxApproachC)}) and the flow meter is above ${formatTemperatureSummary(flowReopenC)}.`;
-      } else if (reason === 'flow_goal') {
-        text = `Auto is holding the LN valve closed because flow-meter temperature is ${formatTemperatureSummary(
-          flowTempC,
+        )} (TMI − ${formatTemperatureSummary(currentHxApproachC)}) and TMI is above ${formatTemperatureSummary(hfeReopenC)}.`;
+      } else if (reason === 'hfe_goal' || reason === 'tmi_goal' || reason === 'flow_goal') {
+        text = `Auto is holding the LN valve closed because TMI is ${formatTemperatureSummary(
+          hfeTempC,
         )}, at or below the HFE goal ${formatTemperatureSummary(currentHfeGoalC)}. It can reopen once THI rises above ${formatTemperatureSummary(
           thiReopenC,
-        )} (flow − ${formatTemperatureSummary(currentHxApproachC)}) and the flow meter is above ${formatTemperatureSummary(flowReopenC)}.`;
+        )} (TMI − ${formatTemperatureSummary(currentHxApproachC)}) and TMI is above ${formatTemperatureSummary(hfeReopenC)}.`;
       } else {
         text = 'Auto is holding the LN valve closed.';
       }
@@ -432,20 +457,20 @@
     } else if (readyToOpen) {
       text = `Auto ${valveOpen ? 'has the LN valve open' : 'is ready to open the LN valve'}. THI is ${formatTemperatureSummary(
         thiTempC,
-      )} and flow-meter temperature is ${formatTemperatureSummary(
-        flowTempC,
+      )} and TMI is ${formatTemperatureSummary(
+        hfeTempC,
       )}, both above their reopen thresholds.`;
       tone = 'success';
     } else if (withinBand || autoCloseLatched) {
       text = `Auto is holding the LN valve closed until the hysteresis band clears. Reopen thresholds are THI ${formatTemperatureSummary(
         thiReopenC,
-      )} (flow − ${formatTemperatureSummary(currentHxApproachC)}) and flow-meter temperature ${formatTemperatureSummary(flowReopenC)}.`;
+      )} (TMI − ${formatTemperatureSummary(currentHxApproachC)}) and TMI ${formatTemperatureSummary(hfeReopenC)}.`;
       tone = 'info';
     } else {
       text = `Auto close thresholds are clear; the LN valve is ${
         valveOpen ? 'open' : 'allowed to open'
-      }. THI reopen threshold ${formatTemperatureSummary(thiReopenC)} and flow-meter reopen threshold ${formatTemperatureSummary(
-        flowReopenC,
+      }. THI reopen threshold ${formatTemperatureSummary(thiReopenC)} and TMI reopen threshold ${formatTemperatureSummary(
+        hfeReopenC,
       )} apply after an auto close.`;
       tone = 'success';
     }
@@ -1645,7 +1670,11 @@
       if (stable !== null) {
         parts.push(stable ? 'stable' : 'moving');
       }
-      overviewScaleStatusEl.textContent = parts.length ? parts.join(' • ') : 'Awaiting scale';
+      overviewScaleStatusEl.textContent = parts.length
+        ? parts.join(' • ')
+        : Number.isFinite(weightKg)
+        ? 'receiving'
+        : 'Awaiting scale';
       setTone(overviewScaleStatusEl, stale ? 'warn' : '');
     }
   }
@@ -2149,34 +2178,42 @@
         nextAutoControl.thi_limit_c = currentHxLimitC;
         nextAutoControl.ln_hysteresis_c = currentAutoHysteresisC;
         nextAutoControl.hx_approach_c = currentHxApproachC;
-        const thiTempForPreview = finiteNumber(nextAutoControl.thi_temp_c);
-        const flowTempForPreview = finiteNumber(nextAutoControl.flow_temp_c);
-        nextAutoControl.thi_reopen_c = Number.isFinite(flowTempForPreview)
-          ? flowTempForPreview - currentHxApproachC
+        const thiTempForPreview = firstFiniteControlNumber(nextAutoControl.thi_temp_c);
+        const hfeTempForPreview = firstFiniteControlNumber(
+          nextAutoControl.hfe_temp_c,
+          nextAutoControl.tmi_temp_c,
+          nextAutoControl.flow_temp_c,
+        );
+        nextAutoControl.thi_reopen_c = Number.isFinite(hfeTempForPreview)
+          ? hfeTempForPreview - currentHxApproachC
           : null;
+        nextAutoControl.hfe_reopen_c = currentHfeGoalC + currentAutoHysteresisC;
+        nextAutoControl.tmi_reopen_c = currentHfeGoalC + currentAutoHysteresisC;
         nextAutoControl.flow_reopen_c = currentHfeGoalC + currentAutoHysteresisC;
         nextAutoControl.thi_valid = Number.isFinite(thiTempForPreview);
-        nextAutoControl.flow_valid = Number.isFinite(flowTempForPreview);
+        nextAutoControl.hfe_valid = Number.isFinite(hfeTempForPreview);
+        nextAutoControl.tmi_valid = Number.isFinite(hfeTempForPreview);
+        nextAutoControl.flow_valid = Number.isFinite(hfeTempForPreview);
         let previewCloseRequested = false;
         let previewReason = 'none';
         if (!Number.isFinite(thiTempForPreview)) {
           previewCloseRequested = true;
           previewReason = 'missing_thi';
-        } else if (!Number.isFinite(flowTempForPreview)) {
+        } else if (!Number.isFinite(hfeTempForPreview)) {
           previewCloseRequested = true;
-          previewReason = 'missing_flow_temp';
+          previewReason = 'missing_hfe_temp';
         } else if (thiTempForPreview <= currentHxLimitC) {
           previewCloseRequested = true;
           previewReason = 'thi_limit';
-        } else if (flowTempForPreview <= currentHfeGoalC) {
+        } else if (hfeTempForPreview <= currentHfeGoalC) {
           previewCloseRequested = true;
-          previewReason = 'flow_goal';
+          previewReason = 'hfe_goal';
         }
         const previewReadyToOpen =
           !previewCloseRequested &&
           Number.isFinite(nextAutoControl.thi_reopen_c) &&
           thiTempForPreview >= nextAutoControl.thi_reopen_c &&
-          flowTempForPreview >= nextAutoControl.flow_reopen_c;
+          hfeTempForPreview >= nextAutoControl.hfe_reopen_c;
         let previewAutoCloseLatched = coerceOnOff(nextAutoControl.auto_close_latched) === true;
         if (previewCloseRequested) {
           previewAutoCloseLatched = true;

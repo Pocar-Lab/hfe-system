@@ -107,13 +107,23 @@ THERMOCOUPLE_LABELS: Mapping[str, str] = {
     "THI_C": "THI",
 }
 
+TC_CALIBRATION_COLUMNS: tuple[str, ...] = ("TC", "gain", "offset_C", "cal_type")
+TEMPERATURE_BLOCK_START_INDEX = 1
+TEMPERATURE_BLOCK_LENGTH = 10
+HX_CHANNEL_COLUMNS_BY_BLOCK_INDEX: Mapping[int, str] = {
+    8: "THI_C",
+    9: "THM_C",
+}
+TRUE_METADATA_VALUES = {"1", "true", "yes", "y"}
+FALSE_METADATA_VALUES = {"0", "false", "no", "n"}
+
 LEGACY_TC_FIX_TIMESTAMP = datetime(2026, 4, 20, 11, 15, 45)
 LEGACY_WRONG_TYPE_TC_COLUMNS: tuple[str, ...] = ("TTEST_C", "TFO_C", "TTI_C", "TTO_C", "TMI_C")
 LEGACY_FLOW_WRONG_TYPE_TC_COLUMNS: tuple[str, ...] = ("TFO_C", "TTI_C", "TTO_C", "TMI_C")
 LEGACY_EFFECTIVE_COLD_JUNCTION_C = 21.44563390332121
 LEGACY_ROOM_ONLY_TC_CALIBRATION: Mapping[str, tuple[float, float]] = {
-    "THM_C": (1.0, -0.6422222222222214),
-    "THI_C": (1.0, 0.5877777777777773),
+    "THI_C": (1.0, -0.6422222222222214),
+    "THM_C": (1.0, 0.5877777777777773),
 }
 
 # NIST ITS-90 absolute emf reference functions for the two thermocouple types we
@@ -510,13 +520,211 @@ def apply_legacy_tc_correction(
 def canonicalize_tc_columns(frame: pd.DataFrame) -> pd.DataFrame:
     """Rename logger thermocouple columns to the canonical TC tags used in notebooks."""
 
-    data = frame.copy()
+    data = normalize_hx_channel_columns(frame)
     rename_map: dict[str, str] = {}
     for raw_column, canonical_column in THERMOCOUPLE_COLUMN_MAP.items():
         if raw_column in data.columns and canonical_column not in data.columns:
             rename_map[raw_column] = canonical_column
     if rename_map:
         data = data.rename(columns=rename_map)
+    return data
+
+
+def temperature_block_columns(frame: pd.DataFrame) -> tuple[str, ...]:
+    """Return the 10 logger temperature-block columns when present."""
+
+    columns = tuple(str(column) for column in frame.columns)
+    if len(columns) < TEMPERATURE_BLOCK_START_INDEX + TEMPERATURE_BLOCK_LENGTH:
+        return ()
+    if columns[0] != "time_s":
+        return ()
+    return columns[
+        TEMPERATURE_BLOCK_START_INDEX : TEMPERATURE_BLOCK_START_INDEX + TEMPERATURE_BLOCK_LENGTH
+    ]
+
+
+def normalize_hx_channel_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """Normalize U8/U9 dataframe headers to the canonical HX channel names."""
+
+    data = frame.copy()
+    block = temperature_block_columns(data)
+    if not block:
+        return data
+
+    columns = list(data.columns)
+    changed = False
+    for block_index, canonical_column in HX_CHANNEL_COLUMNS_BY_BLOCK_INDEX.items():
+        absolute_index = TEMPERATURE_BLOCK_START_INDEX + block_index
+        current_column = str(columns[absolute_index])
+        if current_column not in {"THI_C", "THM_C"}:
+            continue
+        if current_column != canonical_column:
+            columns[absolute_index] = canonical_column
+            changed = True
+
+    if changed:
+        data.columns = columns
+        data.attrs["hx_channel_columns_normalized"] = True
+    return data
+
+
+def load_tc_calibration(path: str | Path) -> pd.DataFrame:
+    """Load an affine thermocouple calibration table."""
+
+    calibration = pd.read_csv(path)
+    missing = set(TC_CALIBRATION_COLUMNS[:3]) - set(calibration.columns)
+    if missing:
+        raise ValueError(f"Missing calibration column(s): {sorted(missing)}")
+
+    calibration = calibration.copy()
+    calibration["TC"] = calibration["TC"].astype(str).str.strip()
+    calibration["gain"] = pd.to_numeric(calibration["gain"], errors="coerce")
+    calibration["offset_C"] = pd.to_numeric(calibration["offset_C"], errors="coerce")
+    if "cal_type" not in calibration.columns:
+        calibration["cal_type"] = ""
+    calibration = calibration.dropna(subset=["TC", "gain", "offset_C"])
+    calibration = calibration[calibration["TC"].ne("")]
+    return calibration.loc[:, list(TC_CALIBRATION_COLUMNS)].reset_index(drop=True)
+
+
+def read_log_metadata(path: str | Path) -> dict[str, str]:
+    """Parse leading logger metadata comments from a CSV file."""
+
+    metadata: dict[str, str] = {}
+    with Path(path).open("r", encoding="utf-8", errors="replace", newline="") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if not stripped.startswith("#"):
+                break
+            comment = stripped[1:].strip()
+            for item in comment.split(","):
+                if "=" not in item:
+                    continue
+                key, value = item.split("=", 1)
+                metadata[key.strip()] = value.strip()
+    return metadata
+
+
+def log_metadata_bool(metadata: Mapping[str, str], key: str, *, default: bool = False) -> bool:
+    """Return a boolean logger metadata value."""
+
+    value = str(metadata.get(key, "")).strip().lower()
+    if value in TRUE_METADATA_VALUES:
+        return True
+    if value in FALSE_METADATA_VALUES:
+        return False
+    return default
+
+
+def _find_repo_root_from_path(path: Path) -> Path | None:
+    for candidate in (path.resolve().parent, *path.resolve().parents):
+        if (candidate / "data" / "raw").exists() and (candidate / "data" / "processed").exists():
+            return candidate
+    return None
+
+
+def _resolve_tc_calibration_path(
+    log_path: Path,
+    calibration_path: str | Path | None,
+    metadata: Mapping[str, str],
+) -> Path | None:
+    if calibration_path is not None:
+        return Path(calibration_path)
+
+    filename = metadata.get("previous_calibration_file") or metadata.get("calibration_file")
+    if not filename:
+        return None
+
+    candidate = Path(filename)
+    if candidate.is_absolute():
+        return candidate
+
+    repo_root = _find_repo_root_from_path(log_path)
+    if repo_root is not None:
+        return repo_root / "data" / "processed" / "calibration" / candidate.name
+    return log_path.parent / candidate
+
+
+def is_restored_uncalibrated_log(metadata: Mapping[str, str]) -> bool:
+    """Return whether a log was restored from calibrated values back to raw TC data."""
+
+    return (
+        log_metadata_bool(metadata, "restored_from_calibrated")
+        and not log_metadata_bool(metadata, "tc_calibrated", default=True)
+        and bool(metadata.get("previous_calibration_file") or metadata.get("calibration_file"))
+    )
+
+
+def read_tc_calibrated_csv(
+    path: str | Path,
+    *,
+    calibration_path: str | Path | None = None,
+    preserve_raw: bool = True,
+    restored_only: bool = True,
+) -> pd.DataFrame:
+    """Read a logger CSV and apply TC calibration when metadata says raw values were restored."""
+
+    log_path = Path(path)
+    metadata = read_log_metadata(log_path)
+    data = canonicalize_tc_columns(pd.read_csv(log_path, comment="#"))
+    data.attrs["log_metadata"] = metadata
+
+    if restored_only and not is_restored_uncalibrated_log(metadata):
+        data.attrs["tc_calibration_applied_from_log_metadata"] = False
+        return data
+
+    selected_calibration_path = _resolve_tc_calibration_path(log_path, calibration_path, metadata)
+    if selected_calibration_path is None:
+        data.attrs["tc_calibration_applied_from_log_metadata"] = False
+        return data
+    if not selected_calibration_path.exists():
+        raise FileNotFoundError(f"TC calibration file not found: {selected_calibration_path}")
+
+    calibrated = apply_tc_calibration(data, selected_calibration_path, preserve_raw=preserve_raw)
+    calibrated.attrs["log_metadata"] = metadata
+    calibrated.attrs["tc_calibration_applied_from_log_metadata"] = True
+    calibrated.attrs["tc_calibration_source"] = str(selected_calibration_path)
+    return calibrated
+
+
+def apply_tc_calibration(
+    frame: pd.DataFrame,
+    calibration: pd.DataFrame | str | Path,
+    *,
+    columns: Sequence[str] | None = None,
+    preserve_raw: bool = True,
+) -> pd.DataFrame:
+    """Apply an affine thermocouple calibration table to a dataframe in memory."""
+
+    data = canonicalize_tc_columns(frame)
+    table = load_tc_calibration(calibration) if isinstance(calibration, (str, Path)) else calibration.copy()
+    selected = set(columns) if columns is not None else None
+    applied: dict[str, tuple[float, float, str]] = {}
+
+    for row in table.to_dict("records"):
+        tag = str(row.get("TC") or "").strip()
+        if not tag:
+            continue
+        column = f"{tag}_C"
+        if selected is not None and column not in selected and tag not in selected:
+            continue
+        if column not in data.columns:
+            continue
+        gain = float(row["gain"])
+        offset_c = float(row["offset_C"])
+        if not (np.isfinite(gain) and np.isfinite(offset_c)):
+            continue
+        raw = _numeric_column(data, column)
+        if preserve_raw:
+            raw_column = f"{tag}_raw_C"
+            if raw_column not in data.columns:
+                data[raw_column] = raw
+        data[column] = gain * raw + offset_c
+        applied[column] = (gain, offset_c, str(row.get("cal_type") or ""))
+
+    data.attrs["tc_calibration_applied"] = applied
     return data
 
 
@@ -911,11 +1119,12 @@ def prepare_flow_log_review(
     path: str | Path,
     *,
     density_bounds: tuple[float, float] = DEFAULT_HFE_LIQUID_DENSITY_BOUNDS,
+    tc_calibration_path: str | Path | None = None,
 ) -> FlowLogReview:
     """Load one flow log and extract the stable automatic cooldown hold."""
 
     log_path = Path(path)
-    data = pd.read_csv(log_path, comment="#")
+    data = read_tc_calibrated_csv(log_path, calibration_path=tc_calibration_path)
     data, flow_note = add_canonical_flow_columns(data, density_bounds=density_bounds, log_path=log_path)
     segment_summary = build_segment_summary(data)
 
