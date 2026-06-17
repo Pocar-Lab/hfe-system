@@ -1,0 +1,1 @@
+Bath Cp = 16,660 J/K; mixture cp = 2.842 kJ/kg-K; bath mass = 5.86 kg

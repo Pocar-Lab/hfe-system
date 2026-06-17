@@ -1,0 +1,4 @@
+time_s_elapsed,time_s_raw,U1_bottom_C,U2_coilTop_C,U3_top_C,U4_coilMid_C,T_bulk_mean_C,T_coil_mean_C,DeltaT_C,source
+0.0,7722.399,-9.51,-15.49,-8.33,-10.83,-8.92,-13.16,4.24,cell05_output00
+1.005,7723.404,-9.48,-15.52,-8.34,-10.84,-8.91,-13.18,4.27,cell05_output00
+2.01,7724.409,-9.55,-15.51,-8.28,-10.84,-8.915,-13.175,4.26,cell05_output00

@@ -1,0 +1,9 @@
+System performance plots exported from analysis/notebooks/system_performance.ipynb
+
+01_warmup_heat_leaks.png
+02_cooling_performance.png
+03_pump_delta_p_vs_temperature.png
+04_pump_inlet_and_tank_pressure_vs_temperature.png
+05_pump_delta_p_vs_pump_speed.png
+06_pump_delta_p_vs_temperature_vs_pump_speed.png
+07_pump_delta_p_temperature_and_speed.png

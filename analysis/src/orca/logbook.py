@@ -80,17 +80,17 @@ SIGNAL_LABELS: Mapping[str, str] = {
 THERMOCOUPLE_TAG_BY_INDEX: Mapping[int, str] = {
     0: "U0",
     1: "U1",
-    2: "U2",
+    2: "TTEST",
     3: "TFO",
     4: "TTI",
-    5: "U5",
+    5: "TNO",
     6: "TTO",
     7: "TMI",
-    8: "THI",
-    9: "THM",
+    8: "THM",
+    9: "THI",
 }
 
-CONNECTED_THERMOCOUPLE_TAGS: tuple[str, ...] = ("TFO", "TTI", "TTO", "TMI", "THI", "THM")
+CONNECTED_THERMOCOUPLE_TAGS: tuple[str, ...] = ("TTEST", "TFO", "TTI", "TNO", "TTO", "TMI", "THM", "THI")
 
 THERMOCOUPLE_COLUMN_MAP: Mapping[str, str] = {
     f"temp{index}_C": f"{tag}_C"
@@ -99,6 +99,8 @@ THERMOCOUPLE_COLUMN_MAP: Mapping[str, str] = {
 }
 
 THERMOCOUPLE_LABELS: Mapping[str, str] = {
+    "TTEST_C": "TTEST",
+    "TNO_C": "TNO",
     "TFO_C": "TFO",
     "TTI_C": "TTI",
     "TTO_C": "TTO",
@@ -111,8 +113,8 @@ TC_CALIBRATION_COLUMNS: tuple[str, ...] = ("TC", "gain", "offset_C", "cal_type")
 TEMPERATURE_BLOCK_START_INDEX = 1
 TEMPERATURE_BLOCK_LENGTH = 10
 HX_CHANNEL_COLUMNS_BY_BLOCK_INDEX: Mapping[int, str] = {
-    8: "THI_C",
-    9: "THM_C",
+    8: "THM_C",
+    9: "THI_C",
 }
 TRUE_METADATA_VALUES = {"1", "true", "yes", "y"}
 FALSE_METADATA_VALUES = {"0", "false", "no", "n"}
@@ -121,9 +123,9 @@ LEGACY_TC_FIX_TIMESTAMP = datetime(2026, 4, 20, 11, 15, 45)
 LEGACY_WRONG_TYPE_TC_COLUMNS: tuple[str, ...] = ("TTEST_C", "TFO_C", "TTI_C", "TTO_C", "TMI_C")
 LEGACY_FLOW_WRONG_TYPE_TC_COLUMNS: tuple[str, ...] = ("TFO_C", "TTI_C", "TTO_C", "TMI_C")
 LEGACY_EFFECTIVE_COLD_JUNCTION_C = 21.44563390332121
-LEGACY_ROOM_ONLY_TC_CALIBRATION: Mapping[str, tuple[float, float]] = {
-    "THI_C": (1.0, -0.6422222222222214),
-    "THM_C": (1.0, 0.5877777777777773),
+LEGACY_HX_TC_CALIBRATION: Mapping[str, tuple[float, float]] = {
+    "THM_C": (0.9900667185003863, -0.43441797325030507),
+    "THI_C": (1.0673384065088591, -0.7381154463816593),
 }
 
 # NIST ITS-90 absolute emf reference functions for the two thermocouple types we
@@ -500,20 +502,27 @@ def apply_legacy_tc_correction(
                 f"using {room_reference_c:.3f} °C as the room reference (n={int(room_anchor_mask.sum())})."
             )
 
-    applied_room_only = []
-    for column, (gain, offset_c) in LEGACY_ROOM_ONLY_TC_CALIBRATION.items():
+    applied_hx_calibration = []
+    for column, (gain, offset_c) in LEGACY_HX_TC_CALIBRATION.items():
         if column not in data.columns:
             continue
         data[column] = gain * _numeric_column(data, column) + offset_c
-        applied_room_only.append(column.removesuffix("_C"))
-    if applied_room_only:
-        note_parts.append(f"April 20 room-only offsets were also applied to {', '.join(applied_room_only)}.")
+        applied_hx_calibration.append(column.removesuffix("_C"))
+    if applied_hx_calibration:
+        note_parts.append(
+            "April 20 room + warmup-transfer HX calibration was also applied to "
+            f"{', '.join(applied_hx_calibration)}."
+        )
 
     data.attrs["legacy_tc_correction_applied"] = True
     data.attrs["legacy_tc_correction_log_path"] = str(log_path) if log_path is not None else ""
     data.attrs["legacy_tc_effective_cold_junction_c"] = LEGACY_EFFECTIVE_COLD_JUNCTION_C
     data.attrs["legacy_tc_room_anchor_samples"] = int(room_anchor_mask.sum())
     data.attrs["legacy_tc_room_anchor_offsets_c"] = room_anchor_offsets_c
+    data.attrs["legacy_hx_tc_calibration_applied"] = {
+        column: LEGACY_HX_TC_CALIBRATION[column]
+        for column in (f"{tag}_C" for tag in applied_hx_calibration)
+    }
     return data, " ".join(note_parts)
 
 
@@ -633,7 +642,11 @@ def _resolve_tc_calibration_path(
     if calibration_path is not None:
         return Path(calibration_path)
 
-    filename = metadata.get("previous_calibration_file") or metadata.get("calibration_file")
+    filename = (
+        metadata.get("previous_calibration_file")
+        or metadata.get("calibration_file")
+        or metadata.get("ui_calibration_file")
+    )
     if not filename:
         return None
 
@@ -662,30 +675,58 @@ def read_tc_calibrated_csv(
     *,
     calibration_path: str | Path | None = None,
     preserve_raw: bool = True,
-    restored_only: bool = True,
+    restored_only: bool = False,
 ) -> pd.DataFrame:
-    """Read a logger CSV and apply TC calibration when metadata says raw values were restored."""
+    """Read a logger CSV and apply TC calibration to raw post-fix logs in memory.
+
+    Pre-fix logs are left in their stored wrong-type form here so the dedicated
+    legacy K-to-T reconstruction can run later. Files explicitly marked
+    ``tc_calibrated=true`` are also left as-is to avoid double calibration.
+    """
 
     log_path = Path(path)
     metadata = read_log_metadata(log_path)
     data = canonicalize_tc_columns(pd.read_csv(log_path, comment="#"))
     data.attrs["log_metadata"] = metadata
 
+    if log_metadata_bool(metadata, "tc_calibrated", default=False):
+        data.attrs["tc_calibration_applied_from_log_metadata"] = False
+        data.attrs["tc_calibration_applied_in_memory"] = False
+        data.attrs["tc_calibration_reason"] = "already_calibrated"
+        return data
+
+    if is_legacy_wrong_type_log(log_path):
+        data.attrs["tc_calibration_applied_from_log_metadata"] = False
+        data.attrs["tc_calibration_applied_in_memory"] = False
+        data.attrs["tc_calibration_reason"] = "legacy_wrong_type_deferred"
+        return data
+
     if restored_only and not is_restored_uncalibrated_log(metadata):
         data.attrs["tc_calibration_applied_from_log_metadata"] = False
+        data.attrs["tc_calibration_applied_in_memory"] = False
+        data.attrs["tc_calibration_reason"] = "restored_only_skip"
         return data
 
     selected_calibration_path = _resolve_tc_calibration_path(log_path, calibration_path, metadata)
     if selected_calibration_path is None:
         data.attrs["tc_calibration_applied_from_log_metadata"] = False
+        data.attrs["tc_calibration_applied_in_memory"] = False
+        data.attrs["tc_calibration_reason"] = "no_calibration_path"
         return data
     if not selected_calibration_path.exists():
         raise FileNotFoundError(f"TC calibration file not found: {selected_calibration_path}")
 
     calibrated = apply_tc_calibration(data, selected_calibration_path, preserve_raw=preserve_raw)
     calibrated.attrs["log_metadata"] = metadata
-    calibrated.attrs["tc_calibration_applied_from_log_metadata"] = True
+    from_metadata = calibration_path is None
+    calibrated.attrs["tc_calibration_applied_from_log_metadata"] = from_metadata
+    calibrated.attrs["tc_calibration_applied_in_memory"] = True
     calibrated.attrs["tc_calibration_source"] = str(selected_calibration_path)
+    calibrated.attrs["tc_calibration_reason"] = (
+        "restored_raw_metadata"
+        if is_restored_uncalibrated_log(metadata)
+        else "post_fix_raw"
+    )
     return calibrated
 
 

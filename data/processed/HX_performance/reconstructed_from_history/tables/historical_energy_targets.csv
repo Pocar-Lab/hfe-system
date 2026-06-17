@@ -1,0 +1,5 @@
+dataset,window_min,E_HX_kJ,source
+nomix,2.0-12.0,135.125664,cell17_output00
+mixed,2.0-12.0,147.706183,cell17_output00
+mixed_60psi,2.0-10.5,307.265133,cell17_output00
+auto,2.0-12.0,103.125955,cell17_output00

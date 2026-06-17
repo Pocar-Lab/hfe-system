@@ -464,6 +464,7 @@ def _load_hfe_run(
     room_reference_c: float,
     smoothing_window_s: float,
     tc_calibration_path: str | Path | None = None,
+    probe_column: str = "TTEST_C",
 ) -> pd.DataFrame:
     frame = read_tc_calibrated_csv(path, calibration_path=tc_calibration_path).copy()
     if is_legacy_wrong_type_log(path):
@@ -475,12 +476,12 @@ def _load_hfe_run(
         )
         correction_method = "legacy K-to-T reconstruction"
     else:
-        if frame.attrs.get("tc_calibration_applied_from_log_metadata"):
+        if frame.attrs.get("tc_calibration_applied_in_memory"):
             correction_note = (
-                "Restored raw thermocouple values calibrated in memory from "
+                "Raw thermocouple values calibrated in memory from "
                 f"{Path(str(frame.attrs.get('tc_calibration_source'))).name}."
             )
-            correction_method = "restored-log calibration"
+            correction_method = "post-fix raw calibration"
         else:
             correction_note = "Logged thermocouple values used as-is."
             correction_method = "logged calibration"
@@ -491,10 +492,10 @@ def _load_hfe_run(
     frame.attrs["tc_correction_note"] = correction_note
     frame["time_s"] = pd.to_numeric(frame["time_s"], errors="coerce")
     frame = frame.dropna(subset=["time_s"]).sort_values("time_s").reset_index(drop=True)
-    frame["TTEST_C"] = pd.to_numeric(frame["TTEST_C"], errors="coerce")
+    frame[probe_column] = pd.to_numeric(frame[probe_column], errors="coerce")
     frame["t_rel_s"] = frame["time_s"] - float(frame["time_s"].iloc[0])
     frame["t_rel_min"] = frame["t_rel_s"] / 60.0
-    frame["probe_raw_c"] = frame["TTEST_C"].interpolate(limit_direction="both")
+    frame["probe_raw_c"] = frame[probe_column].interpolate(limit_direction="both")
     samples = _window_samples(frame["t_rel_s"], smoothing_window_s)
     frame["probe_smooth_c"] = _rolling_mean(frame["probe_raw_c"], samples)
     frame["probe_rate_c_s"] = np.gradient(frame["probe_smooth_c"].to_numpy(), frame["t_rel_s"].to_numpy())

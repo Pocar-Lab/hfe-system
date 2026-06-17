@@ -208,11 +208,11 @@ TEMP_LOG_COLUMNS = [
     "TTEST_C",
     "TFO_C",
     "TTI_C",
-    "U5_C",
+    "TNO_C",
     "TTO_C",
     "TMI_C",
-    "THI_C",
     "THM_C",
+    "THI_C",
 ]
 TC_CALIBRATION_PATH = REPO / "data" / "processed" / "calibration" / "TC_calibration_20260420.csv"
 RAW_LOG_DIR = REPO / "data" / "raw"
@@ -245,6 +245,12 @@ SCALE_LOG_FIELDS: list[tuple[str, str, str]] = [
     ("scale_age_s", "age_s", "{:.3f}"),
     ("scale_tare_kg", "tare_kg", "{:.3f}"),
 ]
+RSV_SCALE_LOG_FIELDS: list[tuple[str, str, str]] = [
+    ("rsv_scale_mass_kg", "mass_kg", "{:.3f}"),
+    ("rsv_scale_raw_counts", "raw_counts", "{:.0f}"),
+    ("rsv_scale_calibrated", "calibrated", "{:.0f}"),
+]
+RSV_SCALE_INVALID_RAW_COUNTS = {8388607, -8388608}
 
 
 def _load_tc_calibration(path: Path) -> dict[str, dict[str, float | str]]:
@@ -330,6 +336,44 @@ def _finite_float(value: object) -> float | None:
         if math.isfinite(numeric):
             return numeric
     return None
+
+
+def _coerce_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        return None if not math.isfinite(numeric) else numeric != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "on", "yes"}:
+            return True
+        if normalized in {"false", "0", "off", "no"}:
+            return False
+    return None
+
+
+def _normalize_rsv_scale_payload(rsv_scale: object) -> dict | None:
+    if not isinstance(rsv_scale, dict):
+        return None
+
+    normalized = dict(rsv_scale)
+    raw_counts = _finite_float(normalized.get("raw_counts"))
+    invalid_raw = (
+        raw_counts is not None
+        and raw_counts.is_integer()
+        and int(raw_counts) in RSV_SCALE_INVALID_RAW_COUNTS
+    )
+    valid_flag = _coerce_bool(normalized.get("valid"))
+    ready = (valid_flag if valid_flag is not None else raw_counts is not None) and not invalid_raw
+    normalized["valid"] = bool(ready)
+
+    if not ready:
+        normalized["raw_counts"] = None
+        normalized["mass_kg"] = None
+    return normalized
 
 
 _FLOW_VELOCITY_TO_MPS = {
@@ -565,6 +609,10 @@ def _normalize_telemetry_payload(payload: dict) -> dict:
             normalized_control["thi_temp_c"] = _calibrate_tc_value("THI_C", thi_raw)
         normalized["control"] = normalized_control
 
+    rsv_scale = _normalize_rsv_scale_payload(payload.get("rsv_scale"))
+    if rsv_scale is not None:
+        normalized["rsv_scale"] = rsv_scale
+
     fluid_raw = payload.get("fluid")
     fluid = fluid_raw if isinstance(fluid_raw, dict) else None
     if fluid is None:
@@ -781,6 +829,7 @@ def _start_logging(state, filename: Optional[str] = None) -> dict:
         + [col for col, _, _ in PUMP_LOG_FIELDS]
         + [col for col, _, _ in FLUID_LOG_FIELDS]
         + [col for col, _, _ in SCALE_LOG_FIELDS]
+        + [col for col, _, _ in RSV_SCALE_LOG_FIELDS]
     )
     writer.writerow(header)
     fh.flush()
@@ -878,6 +927,14 @@ def _maybe_log_telemetry(state, payload: dict) -> None:
         else:
             row.append("nan")
 
+    rsv_scale = _normalize_rsv_scale_payload(payload.get("rsv_scale")) or {}
+    for _, key, fmt in RSV_SCALE_LOG_FIELDS:
+        value = rsv_scale.get(key)
+        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+            row.append(fmt.format(float(value)))
+        else:
+            row.append("nan")
+
     try:
         writer.writerow(row)
         fh.flush()
@@ -909,7 +966,6 @@ async def lifespan(app: FastAPI):
       - create queues
       - start broadcaster
       - try to attach to serial and push JSON lines into q_live
-      - (if no serial) start a dummy telemetry feeder
     Shutdown:
       - cancel tasks, close serial transport
     """
@@ -949,42 +1005,6 @@ async def lifespan(app: FastAPI):
                 except KeyError:
                     pass
             app.state.q_live.task_done()
-
-    # Optional: dummy telemetry when serial is unavailable
-    async def dummy_feeder():
-        import time, random
-        while True:
-            await asyncio.sleep(1.0)
-            pump_cmd_pct = 0.0  # keep stable to avoid UI confusion when dummy is used
-            pump_freq_pct = 0.0
-            pump_freq_hz = 0.0
-            temps = [24.5 + 1.5 * (2.0 * random.random() - 1.0) for _ in range(4)]
-            temps += [None] * (MAX_LOG_SENSORS - len(temps))
-            app.state.q_live.put_nowait(
-                {
-                    "type": "telemetry",
-                    "t": time.time(),
-                    "tC": temps[0],
-                    "temps": temps,
-                    "valve": int(random.random() > 0.5),
-                    "fault": False,
-                    "pump": {
-                        "cmd_pct": pump_cmd_pct,
-                        "cmd_hz": pump_cmd_pct / 100.0 * 71.7,
-                        "freq_hz": pump_freq_hz,
-                        "freq_pct": pump_freq_pct,
-                        "rotation_speed_rpm": 0.0,
-                        "output_current_a": 0.0,
-                        "output_current_pct": 0.0,
-                        "output_voltage_v": 0.0,
-                        "output_voltage_pct": 0.0,
-                        "input_power_kw": 0.0,
-                        "input_power_w": 0.0,
-                        "input_power_pct": 0.0,
-                        "max_freq_hz": 71.7,
-                    },
-                }
-            )
 
     # Try to open serial (if library present)
     baud = int(CFG.get("serial", {}).get("baudrate", 115200))
@@ -1075,14 +1095,8 @@ async def lifespan(app: FastAPI):
     if not connected:
         log.error("Serial unavailable; no telemetry will be broadcast. Candidates tried: %s", candidate_serial_ports())
 
-    # Start broadcaster and (if needed) dummy feeder
+    # Start broadcaster.
     app.state.tasks.append(asyncio.create_task(broadcaster()))
-    allow_dummy = os.getenv("SUP_ALLOW_DUMMY", "0").lower() in {"1", "true", "yes"}
-    if app.state.ser_transport is None and app.state.ser_thread is None:
-        if allow_dummy:
-          app.state.tasks.append(asyncio.create_task(dummy_feeder()))
-        else:
-          log.error("Serial unavailable and SUP_ALLOW_DUMMY is not enabled; no telemetry will be broadcast.")
 
     # Optional independent scale reader. This updates state; broadcaster attaches
     # the latest scale sample to regular controller telemetry packets.

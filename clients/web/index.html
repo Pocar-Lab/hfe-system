@@ -4,10 +4,10 @@
     <meta charset="utf-8" />
     <title>CryoLoop</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=rsv-uncertainty-style-1" />
     <meta name="color-scheme" content="dark light" />
     <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
-    <script defer src="app.js"></script>
+    <script defer src="app.js?v=rsv-uncertainty-1"></script>
   </head>
   <body>
     <header id="top-bar">
@@ -72,6 +72,14 @@
             <p id="overview-scale-status" class="overview-subvalue muted">Awaiting scale</p>
             <p class="overview-hint">Live reading from the USB scale.</p>
           </article>
+          <article class="overview-card">
+            <h3>RSV Scale Weight</h3>
+            <p id="overview-RSV_scale-weight" class="overview-value">—</p>
+            <p id="overview-RSV_scale-status" class="overview-subvalue muted">Awaiting RSV scale</p>
+            <p class="overview-hint">Live reading from the RSV scale.</p>
+          </article>
+
+
         </section>
 
         <section id="chart-section">
@@ -444,13 +452,14 @@
             <article class="stat-card">
               <h2>Sensors</h2>
               <ul class="pid-reference-list">
-                <li><code>TTEST</code> — temperature, temporary test thermocouple</li>
                 <li><code>THI</code> — temperature, HEX inlet</li>
                 <li><code>THM</code> — temperature, HEX middle</li>
                 <li><code>TTI</code> — temperature, tank inlet</li>
                 <li><code>TTO</code> — temperature, tank outlet</li>
                 <li><code>TMI</code> — temperature, pump inlet</li>
                 <li><code>TFO</code> — temperature, flow meter outlet</li>
+                <li><code>TTEST</code> — temperature, test thermocouple</li>
+                <li><code>TNO</code> — temperature, nitrogen outlet</li>
                 <li><code>PTA</code> — pressure, tank</li>
                 <li><code>PMI</code> — pressure, pump inlet</li>
                 <li><code>PMO</code> — pressure, pump outlet</li>

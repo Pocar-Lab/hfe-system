@@ -1,0 +1,5 @@
+Loaded nomix: start=12.1s, duration=15.11 min
+Loaded mixed: start=1525.6s, duration=21.96 min
+Loaded mixed_60psi: start=974.6s, duration=10.53 min
+Loaded auto: start=2906.5s, duration=12.38 min
+Ambient heat leak applied: 14.89 W

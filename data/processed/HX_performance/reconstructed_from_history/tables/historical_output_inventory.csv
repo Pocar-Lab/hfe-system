@@ -1,0 +1,49 @@
+cell_index,output_index,artifact_type,category,description,notebook_output_file,semantic_file
+2,0,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell02_output00.txt,
+2,1,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell02_output01.txt,
+5,0,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell05_output00.txt,
+5,1,png,temperature,Warmup temperature channels,reconstructed_from_history/original_plots/notebook_outputs/cell05_output01.png,reconstructed_from_history/original_plots/temperature/historical_warmup_temperature.png
+5,1,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell05_output01.txt,
+6,0,png,heat_leak_fit,Warmup heat-leak fit,reconstructed_from_history/original_plots/notebook_outputs/cell06_output00.png,reconstructed_from_history/original_plots/heat_leak_fit/historical_warmup_heat_leak_fit.png
+6,0,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell06_output00.txt,
+7,0,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell07_output00.txt,
+9,0,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell09_output00.txt,
+11,0,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell11_output00.txt,
+12,0,png,temperature,No-mix temperature channels,reconstructed_from_history/original_plots/notebook_outputs/cell12_output00.png,reconstructed_from_history/original_plots/temperature/historical_nomix_temperature.png
+12,0,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell12_output00.txt,
+12,1,png,temperature,Mixed temperature channels,reconstructed_from_history/original_plots/notebook_outputs/cell12_output01.png,reconstructed_from_history/original_plots/temperature/historical_mixed_temperature.png
+12,1,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell12_output01.txt,
+12,2,png,temperature,Mixed 60 psi temperature channels,reconstructed_from_history/original_plots/notebook_outputs/cell12_output02.png,reconstructed_from_history/original_plots/temperature/historical_mixed_60psi_temperature.png
+12,2,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell12_output02.txt,
+12,3,png,temperature,Automatic valve temperature channels,reconstructed_from_history/original_plots/notebook_outputs/cell12_output03.png,reconstructed_from_history/original_plots/temperature/historical_auto_temperature.png
+12,3,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell12_output03.txt,
+13,0,png,bulk_fit,No-mix bulk temperature and slope fit,reconstructed_from_history/original_plots/notebook_outputs/cell13_output00.png,reconstructed_from_history/original_plots/bulk_fit/historical_nomix_bulk_fit.png
+13,0,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell13_output00.txt,
+13,1,png,bulk_fit,Mixed bulk temperature and slope fit,reconstructed_from_history/original_plots/notebook_outputs/cell13_output01.png,reconstructed_from_history/original_plots/bulk_fit/historical_mixed_bulk_fit.png
+13,1,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell13_output01.txt,
+13,2,png,bulk_fit,Mixed 60 psi bulk temperature and slope fit,reconstructed_from_history/original_plots/notebook_outputs/cell13_output02.png,reconstructed_from_history/original_plots/bulk_fit/historical_mixed_60psi_bulk_fit.png
+13,2,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell13_output02.txt,
+13,3,png,bulk_fit,Automatic valve bulk temperature and slope fit,reconstructed_from_history/original_plots/notebook_outputs/cell13_output03.png,reconstructed_from_history/original_plots/bulk_fit/historical_auto_bulk_fit.png
+13,3,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell13_output03.txt,
+14,0,png,power_ua,"No-mix power, heat flux, and UA",reconstructed_from_history/original_plots/notebook_outputs/cell14_output00.png,reconstructed_from_history/original_plots/power_ua/historical_nomix_power_ua.png
+14,0,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell14_output00.txt,
+14,1,png,power_ua,"Mixed power, heat flux, and UA",reconstructed_from_history/original_plots/notebook_outputs/cell14_output01.png,reconstructed_from_history/original_plots/power_ua/historical_mixed_power_ua.png
+14,1,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell14_output01.txt,
+14,2,png,power_ua,"Mixed 60 psi power, heat flux, and UA",reconstructed_from_history/original_plots/notebook_outputs/cell14_output02.png,reconstructed_from_history/original_plots/power_ua/historical_mixed_60psi_power_ua.png
+14,2,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell14_output02.txt,
+14,3,png,power_ua,"Automatic valve power, heat flux, and UA",reconstructed_from_history/original_plots/notebook_outputs/cell14_output03.png,reconstructed_from_history/original_plots/power_ua/historical_auto_power_ua.png
+14,3,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell14_output03.txt,
+16,0,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell16_output00.txt,
+17,0,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell17_output00.txt,
+18,0,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell18_output00.txt,
+19,0,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell19_output00.txt,
+21,0,png,fit_window,No-mix final fit window,reconstructed_from_history/original_plots/notebook_outputs/cell21_output00.png,reconstructed_from_history/original_plots/fit_window/historical_nomix_fit_window.png
+21,0,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell21_output00.txt,
+21,1,png,fit_window,Mixed final fit window,reconstructed_from_history/original_plots/notebook_outputs/cell21_output01.png,reconstructed_from_history/original_plots/fit_window/historical_mixed_fit_window.png
+21,1,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell21_output01.txt,
+21,2,png,fit_window,Mixed 60 psi final fit window,reconstructed_from_history/original_plots/notebook_outputs/cell21_output02.png,reconstructed_from_history/original_plots/fit_window/historical_mixed_60psi_fit_window.png
+21,2,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell21_output02.txt,
+21,3,png,fit_window,Automatic valve final fit window,reconstructed_from_history/original_plots/notebook_outputs/cell21_output03.png,reconstructed_from_history/original_plots/fit_window/historical_auto_fit_window.png
+21,3,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell21_output03.txt,
+21,4,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell21_output04.txt,
+22,0,text,notebook_text_output,Plain-text output extracted from historical notebook,reconstructed_from_history/extracted_text_outputs/cell22_output00.txt,

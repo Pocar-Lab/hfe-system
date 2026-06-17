@@ -17,14 +17,14 @@ constexpr uint8_t CS_PINS[] = { 9, 3, 23, 31, 39, 47, 30, 38, 46, 48 };
 constexpr max31856_thermocoupletype_t TC_TYPES[] = {
   MAX31856_TCTYPE_K, // U0 (unused)
   MAX31856_TCTYPE_K, // U1 (unused)
-  MAX31856_TCTYPE_T, // U2 / TTEST
+  MAX31856_TCTYPE_K, // U2 / TTEST
   MAX31856_TCTYPE_T, // U3 / TFO
   MAX31856_TCTYPE_T, // U4 / TTI
-  MAX31856_TCTYPE_K, // U5 (unused)
+  MAX31856_TCTYPE_K, // U5 / TNO
   MAX31856_TCTYPE_T, // U6 / TTO
   MAX31856_TCTYPE_T, // U7 / TMI
-  MAX31856_TCTYPE_K, // U8 / THI
-  MAX31856_TCTYPE_K, // U9 / THM
+  MAX31856_TCTYPE_K, // U8 / THM
+  MAX31856_TCTYPE_K, // U9 / THI
 };
 constexpr size_t  NUM_TCS   = sizeof(CS_PINS) / sizeof(CS_PINS[0]);
 
@@ -33,6 +33,19 @@ constexpr size_t MAX_TCS_OUT = 10;
 
 // ── Valve output ─────────────────────────────────────────────────────────
 constexpr int VALVE_PIN = 7;
+
+// ── RSV scale reading ────────────────────────────────────────────────────
+constexpr int SCALE_DIGITAL_OUTPUT = 36; // RSV scale output
+constexpr int SCALE_DIGITAL_INPUT = 28; // RSV scale input
+constexpr int   RSV_SCALE_DATA_PIN = SCALE_DIGITAL_OUTPUT;
+constexpr int   RSV_SCALE_CLOCK_PIN = SCALE_DIGITAL_INPUT;
+constexpr long  RSV_SCALE_TARE_COUNTS = -24745L;
+constexpr float RSV_SCALE_COUNTS_PER_KG = 10192.8f; // calibrated from raw -24745 empty and 30296 at 5.4 kg
+constexpr unsigned long RSV_SCALE_TIMEOUT_US = 50000UL;
+// Invalid HX711 frames seen when the data line is floating/glitching. Without this guard,
+// raw -1 would be converted to about 2.3 kg with the current tare/slope.
+constexpr long RSV_SCALE_RAW_ALL_HIGH = -1L;
+constexpr long RSV_SCALE_RAW_ALL_LOW = 0L;
 
 // ── Heater relays ────────────────────────────────────────────────────────
 constexpr int HEATER_BOTTOM_PIN = 11;  // tank bottom heater relay
@@ -54,8 +67,6 @@ constexpr uint8_t  VFD_SLAVE_ADDR    = 1;       // y01
 constexpr uint32_t VFD_BAUD          = 9600;    // y04
 constexpr unsigned long VFD_POLL_MS  = 1000UL;  // poll VFD monitor registers once per second
 
-// ── Flow meter (KROHNE MFC400 via DFR0845 on Serial2) ───────────────────
-// MFC400 Modbus supplement (ER 1.0) maps 30000..30008 as five float input registers:
 // Flow Velocity, Volume Flow, Mass Flow, Temperature, Density.
 constexpr uint8_t  FLOW_SLAVE_ADDR   = 1;
 constexpr uint32_t FLOW_BAUD         = 19200;
@@ -64,9 +75,8 @@ constexpr uint16_t FLOW_REG_START    = 30000;   // 30000..30008, five floats
 constexpr uint8_t  FLOW_REG_COUNT    = 10;      // 10 x 16-bit regs = 5 x float32
 constexpr float    FLUID_CONC_PCT    = 100.0f;
 constexpr char     FLUID_NAME[]      = "HFE-7200";
+
 // ── Pressure sensors (0–5.013 V = 10 bar gauge) ─────────────────────────
-// IMPORTANT: these must be analog-capable pins (A0–A15 on the Mega). If you move the wiring,
-// update these constants to the matching Ax (or 54..69) numbers.
 constexpr uint8_t PRESSURE_PIN_BEFORE = A8;  // before pump
 constexpr uint8_t PRESSURE_PIN_AFTER  = A0;  // after pump
 constexpr uint8_t PRESSURE_PIN_TANK   = A1;  // tank
@@ -94,7 +104,7 @@ constexpr float DEFAULT_HX_LIMIT_C           = -120.0f; // °C, HFE icing guard 
 constexpr float DEFAULT_LN_AUTO_HYSTERESIS_C = 0.5f;    // °C, HFE goal reopen margin
 constexpr float DEFAULT_HX_APPROACH_C        = 10.0f;   // °C, THI reopen margin below TMI
 constexpr size_t HFE_AUTO_SENSOR_INDEX       = 7;       // U7 = TMI
-constexpr size_t THI_SENSOR_INDEX            = 8;       // U8 = THI
+constexpr size_t THI_SENSOR_INDEX            = 9;       // U9 = THI
 
 // ── Valve/override state ─────────────────────────────────────────────────
 enum ValveState   : uint8_t { CLOSED = 0, OPEN = 1 };
@@ -153,6 +163,23 @@ struct FlowSnapshot {
 };
 
 static FlowSnapshot g_flow = { false, NAN, NAN, NAN, NAN, NAN, 0 };
+
+enum RsvScaleError : uint8_t {
+  RSV_SCALE_OK = 0,
+  RSV_SCALE_TIMEOUT,
+  RSV_SCALE_INVALID_FRAME,
+};
+
+struct RsvScaleSnapshot {
+  bool valid;
+  long rawCounts;
+  long lastRawCandidate;
+  RsvScaleError error;
+  float massKg;
+  unsigned long lastReadMs;
+};
+
+static RsvScaleSnapshot g_rsv_scale = { false, 0L, 0L, RSV_SCALE_TIMEOUT, NAN, 0 };
 
 enum AutoCloseReason : uint8_t {
   AUTO_CLOSE_NONE = 0,
@@ -617,6 +644,81 @@ static bool pollFlowMeter() {
   g_flow.temperatureRaw  = regsToFloatBE(&regs[6]);
   g_flow.densityKgM3     = regsToFloatBE(&regs[8]);
   return true;
+}
+
+static const char* rsvScaleErrorKey(RsvScaleError error) {
+  switch (error) {
+    case RSV_SCALE_TIMEOUT: return "timeout";
+    case RSV_SCALE_INVALID_FRAME: return "invalid_frame";
+    default: return "none";
+  }
+}
+
+static bool readRsvScaleRaw(long *out, long *rawCandidate, RsvScaleError *error) {
+  if (!out) return false;
+  if (rawCandidate) *rawCandidate = 0L;
+  if (error) *error = RSV_SCALE_OK;
+
+  const unsigned long startUs = micros();
+  while (digitalRead(RSV_SCALE_DATA_PIN) == HIGH) {
+    if ((unsigned long)(micros() - startUs) >= RSV_SCALE_TIMEOUT_US) {
+      if (error) *error = RSV_SCALE_TIMEOUT;
+      return false;
+    }
+  }
+
+  unsigned long value = 0;
+  noInterrupts();
+  for (uint8_t i = 0; i < 24; ++i) {
+    digitalWrite(RSV_SCALE_CLOCK_PIN, HIGH);
+    delayMicroseconds(1);
+    value = (value << 1) | (digitalRead(RSV_SCALE_DATA_PIN) ? 1UL : 0UL);
+    digitalWrite(RSV_SCALE_CLOCK_PIN, LOW);
+    delayMicroseconds(1);
+  }
+
+  // One extra clock pulse selects channel A at gain 128 for the next HX711 conversion.
+  digitalWrite(RSV_SCALE_CLOCK_PIN, HIGH);
+  delayMicroseconds(1);
+  digitalWrite(RSV_SCALE_CLOCK_PIN, LOW);
+  interrupts();
+
+  if (value & 0x800000UL) {
+    value |= 0xFF000000UL;
+  }
+
+  const long signedValue = static_cast<long>(value);
+  if (rawCandidate) *rawCandidate = signedValue;
+  
+
+  *out = signedValue;
+  return true;
+}
+
+static void pollRsvScale(unsigned long nowMs) {
+  long raw = 0L;
+  long rawCandidate = 0L;
+  RsvScaleError error = RSV_SCALE_OK;
+  g_rsv_scale.lastReadMs = nowMs;
+
+  if (!readRsvScaleRaw(&raw, &rawCandidate, &error)) {
+    g_rsv_scale.valid = false;
+    g_rsv_scale.rawCounts = 0L;
+    g_rsv_scale.lastRawCandidate = rawCandidate;
+    g_rsv_scale.error = error;
+    g_rsv_scale.massKg = NAN;
+    return;
+  }
+
+  g_rsv_scale.valid = true;
+  g_rsv_scale.rawCounts = raw;
+  g_rsv_scale.lastRawCandidate = raw;
+  g_rsv_scale.error = RSV_SCALE_OK;
+  if (fabs(RSV_SCALE_COUNTS_PER_KG) > 1.0e-9f) {
+    g_rsv_scale.massKg = (static_cast<float>(raw - RSV_SCALE_TARE_COUNTS)) / RSV_SCALE_COUNTS_PER_KG;
+  } else {
+    g_rsv_scale.massKg = NAN;
+  }
 }
 
 static bool tryParseFloat(const String& text, float *out) {
@@ -1109,6 +1211,30 @@ static void emitTelemetry(const float temps[], size_t count, unsigned long nowMs
     Serial.print(g_flow.densityKgM3, 6);
   }
   Serial.print('}');
+  Serial.print(F(",\"rsv_scale\":{"));
+  const bool rsvScaleCalibrated = fabs(RSV_SCALE_COUNTS_PER_KG) > 1.0e-9f;
+  Serial.print(F("\"valid\":"));
+  Serial.print(g_rsv_scale.valid ? F("true") : F("false"));
+  Serial.print(F(",\"raw_counts\":"));
+  if (g_rsv_scale.valid) Serial.print(g_rsv_scale.rawCounts); else Serial.print(F("null"));
+  Serial.print(F(",\"last_raw_counts\":"));
+  Serial.print(g_rsv_scale.lastRawCandidate);
+  Serial.print(F(",\"error\":\""));
+  Serial.print(rsvScaleErrorKey(g_rsv_scale.error));
+  Serial.print('"');
+  Serial.print(F(",\"data_pin_state\":"));
+  Serial.print(digitalRead(RSV_SCALE_DATA_PIN));
+  Serial.print(F(",\"mass_kg\":"));
+  if (g_rsv_scale.valid && isfinite(g_rsv_scale.massKg)) Serial.print(g_rsv_scale.massKg, 3); else Serial.print(F("null"));
+  Serial.print(F(",\"calibrated\":"));
+  Serial.print(rsvScaleCalibrated ? F("true") : F("false"));
+  Serial.print(F(",\"tare_counts\":"));
+  Serial.print(RSV_SCALE_TARE_COUNTS);
+  Serial.print(F(",\"counts_per_kg\":"));
+  if (rsvScaleCalibrated) Serial.print(RSV_SCALE_COUNTS_PER_KG, 3); else Serial.print(F("null"));
+  Serial.print(F(",\"last_read_ms\":"));
+  Serial.print(g_rsv_scale.lastReadMs);
+  Serial.print('}');
   Serial.print(F(",\"control\":{"));
   Serial.print(F("\"hfe_goal_c\":"));
   Serial.print(g_hfe_goal_c, 2);
@@ -1192,6 +1318,10 @@ void setup() {
   pinMode(PRESSURE_PIN_AFTER, INPUT);
   pinMode(PRESSURE_PIN_TANK, INPUT);
 
+  pinMode(RSV_SCALE_DATA_PIN, INPUT_PULLUP);
+  digitalWrite(RSV_SCALE_CLOCK_PIN, LOW);
+  pinMode(RSV_SCALE_CLOCK_PIN, OUTPUT);
+
   pinMode(SCK_PIN,  OUTPUT);
   pinMode(MOSI_PIN, OUTPUT);
   pinMode(MISO_PIN, INPUT);
@@ -1205,8 +1335,8 @@ void setup() {
     tc[i]->setNoiseFilter(MAX31856_NOISE_FILTER_60HZ); // correct enum
   }
 
-  // JSON line telemetry: temps[0..9] (°C), valve (0/1), mode (A/O/C), pump{}, safety{}, fluid{}, control{}, heaters{}
-  Serial.println(F("# Telemetry keys: temps[0..9] (°C), valve (0/1), mode (A/O/C), pump{} (VFD + pressures), safety{} (latched interlocks), fluid{} (MFC400), control{} (HFE goal + HX limit + hysteresis + HX approach + LN auto status), heaters{bottom,exhaust}"));
+  // JSON line telemetry: temps[0..9] (°C), valve (0/1), mode (A/O/C), pump{}, safety{}, fluid{}, rsv_scale{}, control{}, heaters{}
+  Serial.println(F("# Telemetry keys: temps[0..9] (°C), valve (0/1), mode (A/O/C), pump{} (VFD + pressures), safety{} (latched interlocks), fluid{} (MFC400), rsv_scale{} (reservoir scale), control{} (HFE goal + HX limit + hysteresis + HX approach + LN auto status), heaters{bottom,exhaust}"));
 }
 
 void loop() {
@@ -1258,6 +1388,7 @@ void loop() {
     float pressureTankBar   = voltsToBar(pressureTankVolts);
 
     updatePumpDeltaPSafety(pressureBeforeBar, pressureAfterBar, now);
+    pollRsvScale(now);
 
     emitTelemetry(temps_out, MAX_TCS_OUT, now,
                   pressureBeforeBar, pressureAfterBar, pressureTankBar,

@@ -1,0 +1,9 @@
+Ambient heat leak: 14.89 W (95% CI 14.87-14.92 W)
+nomix median heat flux 6-10 min: 1981 W/m²
+nomix integrated HX energy 2.0-12.0 min: 135.1 kJ
+mixed median heat flux 6-10 min: 2449 W/m²
+mixed integrated HX energy 2.0-12.0 min: 147.7 kJ
+mixed_60psi median heat flux 6-10 min: 5010 W/m²
+mixed_60psi integrated HX energy 2.0-10.5 min: 307.3 kJ
+auto median heat flux 6-10 min: 1288 W/m²
+auto integrated HX energy 2.0-12.0 min: 103.1 kJ

@@ -1,0 +1,15 @@
+                             scenario  gauge_pressure_psi  velocity_used_ms  \
+0  Baseline 25 psi (Oct 21 & 23 runs)                25.0         20.668441   
+1           60 psi mixed run (Oct 24)                60.0         25.000000   
+
+  velocity_source  ideal_exit_velocity_ms  LN_mass_flow_g_s  LN_vol_flow_mL_s  \
+0           ideal               20.668441        196.197321        243.119356   
+1        measured               32.019412        237.315090        294.070744   
+
+                                               notes  \
+0  Nominal manual-mix operation used for earlier ...   
+1  Measured 25 m/s gaseous nitrogen at HX outlet;...   
+
+   measured_outlet_velocity_ms  measured_gas_vol_flow_L_min  
+0                          NaN                          NaN  
+1                         25.0                    17.644245  

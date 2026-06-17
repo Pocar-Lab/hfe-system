@@ -21,14 +21,19 @@ TC_MAP: MutableMapping[str, str] = dict(DEFAULT_TC_MAP)
 SlopeFunc = Callable[[Iterable[float], Iterable[float], float], np.ndarray]
 
 
-def load_tc_csv(path: Path | str, *, rename_map: Mapping[str, str] | None = None) -> pd.DataFrame:
+def load_tc_csv(
+    path: Path | str,
+    *,
+    rename_map: Mapping[str, str] | None = None,
+    comment: str | None = "#",
+) -> pd.DataFrame:
     """Load a logger CSV and add the derived temperature columns used by ORCA."""
 
     csv_path = Path(path)
     if not csv_path.exists():
         raise FileNotFoundError(csv_path)
 
-    data = pd.read_csv(csv_path, comment="#")
+    data = pd.read_csv(csv_path, comment=comment)
     mapping = dict(TC_MAP)
     if rename_map:
         mapping.update(rename_map)

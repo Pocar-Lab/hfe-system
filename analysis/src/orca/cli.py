@@ -47,12 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--window-s", type=float, default=45.0, help="Rolling window for dT/dt [s].")
     parser.add_argument(
         "--out-ts",
-        default="data/processed/hx_timeseries.csv",
+        default="data/processed/HX_performance/hx_timeseries.csv",
         help="Output CSV for the corrected time series.",
     )
     parser.add_argument(
         "--out-summary",
-        default="data/processed/hx_summary.csv",
+        default="data/processed/HX_performance/hx_summary.csv",
         help="Output CSV for summary metrics.",
     )
     return parser

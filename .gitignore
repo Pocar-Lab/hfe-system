@@ -30,6 +30,11 @@ logs/
 *.csv
 !data/processed/*.csv
 !data/processed/**/*.csv
+!data/raw/HX_performance/log_20251023_140530-mixed.csv
+!data/raw/HX_performance/log_20251023_142833-mixed_auto.csv
+!data/raw/HX_performance/log_20251023_154857-warmup2.csv
+!data/raw/HX_performance/log_20251024_142037_mixed60psi.csv
+!data/raw/HX_performance/hx_reconstruction_manifest.csv
 
 # Raw-data archives and local backup snapshots
 data/raw/archive/

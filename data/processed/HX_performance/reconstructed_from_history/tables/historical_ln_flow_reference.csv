@@ -1,0 +1,3 @@
+scenario,gauge_pressure_psi,velocity_used_ms,velocity_source,ideal_exit_velocity_ms,LN_mass_flow_g_s,LN_vol_flow_mL_s,measured_outlet_velocity_ms,measured_gas_vol_flow_L_min,source
+Baseline 22 psi (Oct 21 and 23 runs; pressure corrected by user),22.0,19.388716,ideal scaled after pressure correction,19.388716,184.049401,228.066172,,,cell02_output01 with user pressure correction
+60 psi mixed run (Oct 24),60.0,25.0,measured,32.019412,237.31509,294.070744,25.0,17.644245,cell02_output01

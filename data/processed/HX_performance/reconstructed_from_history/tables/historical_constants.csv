@@ -1,0 +1,6 @@
+name,value,unit,source
+bath_heat_capacity,16660.0,J/K,analysis/docs/HX_performance_analysis.ipynb cell02_output00
+mixture_cp,2.842,kJ/kg/K,analysis/docs/HX_performance_analysis.ipynb cell02_output00
+bath_mass,5.86,kg,analysis/docs/HX_performance_analysis.ipynb cell02_output00
+ambient_heat_leak,14.89,W,analysis/docs/HX_performance_analysis.ipynb cell07_output00
+hx_area,0.12,m2,historical notebook model constant

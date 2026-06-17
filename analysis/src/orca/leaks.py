@@ -31,7 +31,7 @@ PRESSURE_ERR_COLUMN = "pump_pressure_error_bar"
 ROOM_TEMP_COLUMN = "fluid_temperature_c"
 
 P_ATM_BAR = 1.01325
-TOTAL_SYSTEM_VOLUME_L = 6.13
+TOTAL_SYSTEM_VOLUME_L = 5.88
 GAS_TRAP_VOLUME_L = 3.0
 FILLED_HFE_VOLUME_L = TOTAL_SYSTEM_VOLUME_L - GAS_TRAP_VOLUME_L
 NITROGEN_LEAK_TEST_VOLUME_L = TOTAL_SYSTEM_VOLUME_L
@@ -179,6 +179,7 @@ class SystemPressureResult:  # pylint: disable=too-many-instance-attributes
     fit_curve_pressure_bar: np.ndarray | None
     rmse_mbar: float | None
     warning: str | None = None
+    upper_limit_leak: LeakEstimate | None = None
 
 
 @dataclass(frozen=True)
@@ -1267,6 +1268,28 @@ def analyze_system_pressure_log(csv_path: str | Path) -> SystemPressureResult:
             top_gas_trap.hfe_vapor_pressure_abs_bar,
             hfe_temp_c=series.room_temp_c,
         )
+    upper_limit_leak = None
+    if fit is None:
+        try:
+            upper_limit_curve_time_h = np.linspace(0.0, float(averaged.time_h[-1]), 500)
+            fixed_tail_fit, _, _ = fit_fixed_tail_exponential_with_band(
+                averaged.time_h,
+                averaged.pressure_abs_bar,
+                averaged.pressure_sigma_bar,
+                upper_limit_curve_time_h,
+                asymptote_bar=P_ATM_BAR,
+            )
+            upper_limit_fit = fixed_tail_fit_to_exponential_fit(fixed_tail_fit)
+            candidate_upper_limit = compute_hfe_equivalent_leak(
+                upper_limit_fit.k_per_h,
+                upper_limit_fit.k_err_per_h,
+                top_gas_trap.hfe_vapor_pressure_abs_bar,
+                hfe_temp_c=series.room_temp_c,
+                upper_limit_confidence_level=0.95,
+            )
+            upper_limit_leak = replace(candidate_upper_limit, is_upper_limit_only=True)
+        except (np.linalg.LinAlgError, RuntimeError, ValueError):
+            upper_limit_leak = None
     return SystemPressureResult(
         series=series,
         averaged=averaged,
@@ -1278,6 +1301,7 @@ def analyze_system_pressure_log(csv_path: str | Path) -> SystemPressureResult:
         fit_curve_pressure_bar=fit_curve_pressure_bar,
         rmse_mbar=rmse_mbar,
         warning=warning_message,
+        upper_limit_leak=upper_limit_leak,
     )
 
 
@@ -1780,15 +1804,21 @@ def plot_system_pressure_result(
         export_system_pressure_plot_data(result, data_path)
 
     value_box_lines: list[str] | None = None
-    if result.leak is not None:
+    if result.leak is not None or result.upper_limit_leak is not None:
         value_box_lines = [
             f"Volume: {NITROGEN_LEAK_TEST_VOLUME_L:.2f} L N$_2$ leak-test ({result.top_gas_trap.gas_trap_volume_l:.0f} L gas trap)",
             f"Pressure: {result.top_gas_trap.total_pressure_abs_bar:.2f} bar ({result.top_gas_trap.hfe_vapor_pressure_abs_bar:.3f} bar of HFE vapor)",
-            (
+        ]
+        if result.leak is not None:
+            value_box_lines.append(
                 "HFE loss (top vapor leaks): "
                 f"{format_leak_annotation_line(result.leak, unit='L/year', use_hfe_loss=True)}"
-            ),
-        ]
+            )
+        elif result.upper_limit_leak is not None:
+            value_box_lines.append(
+                "HFE loss upper limit (top vapor leaks): "
+                f"{format_leak_annotation_line(result.upper_limit_leak, unit='L/year', use_hfe_loss=True)}"
+            )
     return plot_pressure_drop_trace(
         result.averaged,
         title=r"HFE System $N_2$ Leak Test",
@@ -2302,6 +2332,16 @@ def system_pressure_summary_table(results: Sequence[SystemPressureResult]) -> pd
                 ),
                 "hfe_loss_l_year": (
                     np.nan if result.leak is None else result.leak.hfe_loss_l_per_year
+                ),
+                "upper_limit_hfe_loss_l_year": (
+                    np.nan
+                    if result.upper_limit_leak is None
+                    else result.upper_limit_leak.upper_limit_hfe_loss_l_per_year
+                ),
+                "upper_limit_confidence_level": (
+                    np.nan
+                    if result.upper_limit_leak is None
+                    else result.upper_limit_leak.upper_limit_confidence_level
                 ),
                 "rmse_mbar": result.rmse_mbar,
                 "warning": result.warning,

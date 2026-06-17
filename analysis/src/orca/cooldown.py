@@ -176,9 +176,9 @@ class CooldownDesignInputs:
     hfe_volume_l: float = HFE_INVENTORY_VOLUME_L
     hfe_cp_25c_j_kg_k: float = HFE7200_CP_REFERENCE_J_KG_K
     hfe_htc_w_m2_k: float = HFE_HTC_NOMINAL_W_M2_K
-    installed_length_m: float = 6.0
+    installed_length_m: float = 6.1
     tube_outer_diameter_m: float = 0.25 * 0.0254
-    tube_wall_thickness_m: float = 0.05 * 0.0254
+    tube_wall_thickness_m: float = 0.049 * 0.0254
     ln2_latent_heat_j_kg: float = 165.0e3
     ln2_density_kg_m3: float = 808.0
     time_point_count: int = 1_200
@@ -277,9 +277,9 @@ def default_system_model() -> SystemModel:
 
     return SystemModel(
         process_loop=StraightTube(
-            length_m=4.5,
+            length_m=5.5,
             outer_diameter_m=3.0 / 8.0 * 0.0254,
-            wall_thickness_m=0.035 * 0.0254,
+            wall_thickness_m=0.5 * (3.0 / 8.0 * 0.0254 - 0.007747),
         ),
         tank=CylindricalTank(
             height_m=0.489,
@@ -287,9 +287,9 @@ def default_system_model() -> SystemModel:
             wall_thickness_m=0.0055,
         ),
         heat_exchanger=StraightTube(
-            length_m=6.0,
+            length_m=6.1,
             outer_diameter_m=0.25 * 0.0254,
-            wall_thickness_m=0.05 * 0.0254,
+            wall_thickness_m=0.049 * 0.0254,
         ),
         tank_liquid_volume_m3=HFE_TANK_VOLUME_L * 1e-3,
         piping_liquid_volume_m3=HFE_ADDITIONAL_VOLUME_L * 1e-3,

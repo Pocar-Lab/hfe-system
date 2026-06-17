@@ -1,0 +1,2 @@
+dataset,tmin_start_min,samples,ambient_heat_leak_W,ambient_heat_leak_sigma_W,ci95_low_W,ci95_high_W,source
+warmup,20.0,6743,14.89,0.01,14.87,14.92,cell07_output00

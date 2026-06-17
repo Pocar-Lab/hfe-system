@@ -1,0 +1,6 @@
+dataset,title,historical_start_s,duration_min,gauge_pressure_psi,gas_velocity_ms,source_file_status,current_raw_filename,source
+nomix,No-mix baseline,12.1,15.1075,,,available true raw log in current repo,log_20251021_152400-nomix.csv,cell09_output00 and cell11_output00
+mixed,Mixed bath,1525.6,21.958833,22.0,,missing original raw log; reconstructed; pressure corrected by user,log_20251023_140530-mixed.csv,cell09_output00 and cell11_output00
+mixed_60psi,Mixed bath - 60 psi LN (25 m/s outlet gas),974.6,10.532717,60.0,25.0,missing original raw log; reconstructed,log_20251024_142037_mixed60psi.csv,cell09_output00 and cell11_output00
+auto,Automatic valve,2906.5,12.377633,,,missing original raw log; reconstructed,log_20251023_142833-mixed_auto.csv,cell09_output00 and cell11_output00
+warmup,Ambient warmup,7722.399,,,,missing original raw log; reconstructed,log_20251023_154857-warmup2.csv,cell05_output00 and cell07_output00

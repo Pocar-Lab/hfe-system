@@ -1,0 +1,21 @@
+   time_s  temp0_C  U1_bottom_C  U2_coilTop_C  U3_top_C  U4_coilMid_C  \
+0   0.000      NaN        -9.51        -15.49     -8.33        -10.83   
+1   1.005      NaN        -9.48        -15.52     -8.34        -10.84   
+2   2.010      NaN        -9.55        -15.51     -8.28        -10.84   
+
+   temp5_C  temp6_C  temp7_C  temp8_C  ...    t_min  T_bulk_mean_C  \
+0      NaN      NaN      NaN      NaN  ...  0.00000         -8.920   
+1      NaN      NaN      NaN      NaN  ...  0.01675         -8.910   
+2      NaN      NaN      NaN      NaN  ...  0.03350         -8.915   
+
+  T_coil_mean_C  DeltaT_C  Strat_top_minus_bottom_C  time_s_raw  valve_state  \
+0       -13.160      4.24                      1.18    7722.399            0   
+1       -13.180      4.27                      1.14    7723.404            0   
+2       -13.175      4.26                      1.27    7724.409            0   
+
+   dataset  dTbulk_dt_C_per_s   P_bath_W  
+0   warmup           0.001254 -20.885530  
+1   warmup           0.001237 -20.613460  
+2   warmup           0.001581 -26.332403  
+
+[3 rows x 23 columns]

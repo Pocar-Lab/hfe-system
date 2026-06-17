@@ -263,6 +263,14 @@ main {
   color: var(--text-primary);
 }
 
+.overview-value .overview-uncertainty {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  font-weight: 400;
+}
+
 .overview-value[data-tone='success'] {
   color: #2ecc71;
 }

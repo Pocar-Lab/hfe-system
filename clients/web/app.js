@@ -23,6 +23,8 @@
   const PUMP_RATED_OUTPUT_W = 746.0;
   const PUMP_NAMEPLATE_EFFICIENCY = 0.855;
   const PUMP_EST_RATED_INPUT_W = PUMP_RATED_OUTPUT_W / PUMP_NAMEPLATE_EFFICIENCY;
+  const RSV_SCALE_INVALID_RAW_COUNTS = new Set([8388607, -8388608]);
+  const RSV_SCALE_UNCERTAINTY_KG = 0.05;
   const TTI_SENSOR_INDEX = 4;
   const TTO_SENSOR_INDEX = 6;
   const FLUID_REFERENCE = {
@@ -60,7 +62,12 @@
     { column: 'scale_age_s', key: 'age_s', digits: 3 },
     { column: 'scale_tare_kg', key: 'tare_kg', digits: 3 },
   ];
-  const TEMP_LOG_COLUMNS = ['U0_C', 'U1_C', 'TTEST_C', 'TFO_C', 'TTI_C', 'U5_C', 'TTO_C', 'TMI_C', 'THI_C', 'THM_C'];
+  const RSV_SCALE_LOG_FIELDS = [
+    { column: 'rsv_scale_mass_kg', key: 'mass_kg', digits: 3 },
+    { column: 'rsv_scale_raw_counts', key: 'raw_counts', digits: 0 },
+    { column: 'rsv_scale_calibrated', key: 'calibrated', digits: 0 },
+  ];
+  const TEMP_LOG_COLUMNS = ['U0_C', 'U1_C', 'TTEST_C', 'TFO_C', 'TTI_C', 'TNO_C', 'TTO_C', 'TMI_C', 'THM_C', 'THI_C'];
   const LOG_HEADER = [
     'time_s',
     ...TEMP_LOG_COLUMNS,
@@ -69,9 +76,10 @@
     ...PUMP_LOG_FIELDS.map((field) => field.column),
     ...FLUID_LOG_FIELDS.map((field) => field.column),
     ...SCALE_LOG_FIELDS.map((field) => field.column),
+    ...RSV_SCALE_LOG_FIELDS.map((field) => field.column),
   ];
   const LOG_FIELD_DIGITS = new Map(
-    [...PUMP_LOG_FIELDS, ...FLUID_LOG_FIELDS, ...SCALE_LOG_FIELDS].map((field) => [field.column, field.digits ?? 3]),
+    [...PUMP_LOG_FIELDS, ...FLUID_LOG_FIELDS, ...SCALE_LOG_FIELDS, ...RSV_SCALE_LOG_FIELDS].map((field) => [field.column, field.digits ?? 3]),
   );
 
   const params = new URLSearchParams(window.location.search);
@@ -128,6 +136,8 @@
   const overviewPumpDeltaPSubEl = document.getElementById('overview-pump-delta-p-sub');
   const overviewScaleWeightEl = document.getElementById('overview-scale-weight');
   const overviewScaleStatusEl = document.getElementById('overview-scale-status');
+  const overviewRsvScaleWeightEl = document.getElementById('overview-RSV_scale-weight');
+  const overviewRsvScaleStatusEl = document.getElementById('overview-RSV_scale-status');
   const sensorValuesEl = document.getElementById('sensor-values');
   const loggingToggleBtn = document.getElementById('logging-toggle');
   const fluidNameEl = document.getElementById('fluid-name');
@@ -232,11 +242,11 @@
     { tag: 'TTEST', label: 'Test thermocouple', connected: true },
     { tag: 'TFO', label: 'Flow meter outlet', connected: true },
     { tag: 'TTI', label: 'Tank inlet', connected: true },
-    { tag: 'U5', label: 'Unassigned', connected: false },
+    { tag: 'TNO', label: 'Nitrogen outlet', connected: true },
     { tag: 'TTO', label: 'Tank outlet', connected: true },
     { tag: 'TMI', label: 'Pump inlet', connected: true },
-    { tag: 'THI', label: 'HEX inlet', connected: true },
     { tag: 'THM', label: 'HEX middle', connected: true },
+    { tag: 'THI', label: 'HEX inlet', connected: true },
   ];
   const CONNECTED_SENSOR_INDICES = SENSOR_METADATA.reduce((indices, meta, index) => {
     if (meta && meta.connected) {
@@ -819,7 +829,12 @@
       const text = typeof value === 'string' ? value : String(value || '');
       return text.slice(0, 1);
     }
-    if (column.startsWith('pump_') || column.startsWith('fluid_') || column.startsWith('scale_')) {
+    if (
+      column.startsWith('pump_') ||
+      column.startsWith('fluid_') ||
+      column.startsWith('scale_') ||
+      column.startsWith('rsv_scale_')
+    ) {
       const digits = LOG_FIELD_DIGITS.get(column) ?? 3;
       const num = typeof value === 'number' ? value : Number(value);
       return Number.isFinite(num) ? num.toFixed(digits) : 'nan';
@@ -955,11 +970,46 @@
   }
 
   function finiteNumber(value) {
+    if (value === null || value === undefined || value === '') {
+      return NaN;
+    }
     if (typeof value === 'number') {
       return Number.isFinite(value) ? value : NaN;
     }
     const num = Number(value);
     return Number.isFinite(num) ? num : NaN;
+  }
+
+  function isInvalidRsvScaleRaw(rawCounts) {
+    return (
+      Number.isFinite(rawCounts) &&
+      Number.isInteger(rawCounts) &&
+      RSV_SCALE_INVALID_RAW_COUNTS.has(rawCounts)
+    );
+  }
+
+  function normalizeRsvScaleTelemetry(rsvScaleData) {
+    const scale = rsvScaleData && typeof rsvScaleData === 'object' ? rsvScaleData : null;
+    if (!scale) {
+      return null;
+    }
+
+    const rawCounts = finiteNumber(scale.raw_counts);
+    const lastRawCounts = Number.isFinite(rawCounts) ? rawCounts : finiteNumber(scale.last_raw_counts);
+    const invalidRaw = isInvalidRsvScaleRaw(lastRawCounts);
+    const validFlag = coerceOnOff(scale.valid);
+    const ready = (validFlag === null ? Number.isFinite(rawCounts) : validFlag === true) && !invalidRaw;
+    const reportedError = typeof scale.error === 'string' ? scale.error.trim().toLowerCase() : '';
+    const error = ready ? 'none' : reportedError || (invalidRaw ? 'invalid_frame' : 'timeout');
+
+    return {
+      ...scale,
+      valid: ready,
+      raw_counts: ready && Number.isFinite(rawCounts) ? rawCounts : null,
+      last_raw_counts: Number.isFinite(lastRawCounts) ? lastRawCounts : null,
+      error,
+      mass_kg: ready ? scale.mass_kg : null,
+    };
   }
 
   function formatNumber(value, digits = 2, suffix = '') {
@@ -1679,6 +1729,55 @@
     }
   }
 
+  function updateRsvScaleTelemetry(rsvScaleData) {
+    const scale = normalizeRsvScaleTelemetry(rsvScaleData);
+    const massKg = scale ? finiteNumber(scale.mass_kg) : NaN;
+    const rawCounts = scale ? finiteNumber(scale.raw_counts) : NaN;
+    const lastRawCounts = scale ? finiteNumber(scale.last_raw_counts) : NaN;
+    const error = scale && typeof scale.error === 'string' ? scale.error : '';
+    const valid = scale ? coerceOnOff(scale.valid) === true : false;
+    const calibrated = scale ? coerceOnOff(scale.calibrated) === true : false;
+
+    if (overviewRsvScaleWeightEl) {
+      if (Number.isFinite(massKg)) {
+        overviewRsvScaleWeightEl.innerHTML =
+          `<span>${massKg.toFixed(1)} kg</span>` +
+          `<span class="overview-uncertainty"> +/- ${RSV_SCALE_UNCERTAINTY_KG.toFixed(2)} kg</span>`;
+      } else {
+        overviewRsvScaleWeightEl.textContent = "—";
+      }
+      setTone(overviewRsvScaleWeightEl, valid && !calibrated ? 'warn' : valid ? '' : 'warn');
+    }
+
+    if (overviewRsvScaleStatusEl) {
+      if (!scale) {
+        overviewRsvScaleStatusEl.textContent = 'Awaiting RSV scale';
+        setTone(overviewRsvScaleStatusEl, 'warn');
+      } else if (!valid) {
+        if (error === 'invalid_frame') {
+          overviewRsvScaleStatusEl.textContent = Number.isFinite(lastRawCounts)
+            ? `Rejected invalid raw ${lastRawCounts.toFixed(0)}`
+            : 'Rejected invalid raw frame';
+        } else if (error === 'timeout') {
+          overviewRsvScaleStatusEl.textContent = 'Data pin not ready';
+        } else {
+          overviewRsvScaleStatusEl.textContent = 'No ready signal';
+        }
+        setTone(overviewRsvScaleStatusEl, 'warn');
+      } else if (!calibrated) {
+        overviewRsvScaleStatusEl.textContent = Number.isFinite(rawCounts)
+          ? `Calibrate scale (raw ${rawCounts.toFixed(0)})`
+          : 'Calibrate scale';
+        setTone(overviewRsvScaleStatusEl, 'warn');
+      } else {
+        overviewRsvScaleStatusEl.textContent = Number.isFinite(rawCounts)
+          ? `receiving (raw ${rawCounts.toFixed(0)})`
+          : 'receiving';
+        setTone(overviewRsvScaleStatusEl, '');
+      }
+    }
+  }
+
   function handleTelemetry(data) {
     const tempsRaw = Array.isArray(data.temps)
       ? data.temps
@@ -1776,6 +1875,7 @@
     const safety = data && typeof data.safety === 'object' ? data.safety : null;
     const fluid = data && typeof data.fluid === 'object' ? data.fluid : null;
     const scale = data && typeof data.scale === 'object' ? data.scale : null;
+    const rsvScale = normalizeRsvScaleTelemetry(data && data.rsv_scale);
     const pressureValues = [
       pump && Number.isFinite(pump.pressure_before_bar_abs) ? pump.pressure_before_bar_abs : null,
       pump && Number.isFinite(pump.pressure_after_bar_abs) ? pump.pressure_after_bar_abs : null,
@@ -1832,12 +1932,14 @@
       safety,
       fluid,
       scale,
+      rsvScale,
       control,
     };
     updatePumpTelemetry(pump, pumpSafetyState);
     updateSensorStats();
     updateFluidTelemetry(fluid, pump);
     updateScaleTelemetry(scale);
+    updateRsvScaleTelemetry(rsvScale);
     updateAutoModeStatus(control);
 
     if (!previousEmergencyStop && pumpSafetyState.resetRequired) {
@@ -1862,6 +1964,7 @@
       row.push(...extractLogValues(pump, PUMP_LOG_FIELDS));
       row.push(...extractLogValues(fluidLog, FLUID_LOG_FIELDS));
       row.push(...extractLogValues(scale, SCALE_LOG_FIELDS));
+      row.push(...extractLogValues(rsvScale, RSV_SCALE_LOG_FIELDS));
       loggingRows.push(row);
     }
 

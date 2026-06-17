@@ -1,0 +1,17 @@
+       dataset                                       title  duration_min  \
+0        nomix                             No-mix baseline     15.107500   
+1        mixed                                  Mixed bath     21.958833   
+2  mixed_60psi  Mixed bath — 60 psi LN (25 m/s outlet gas)     10.532717   
+3         auto                             Automatic valve     12.377633   
+
+   gauge_pressure_psi  gas_velocity_ms  \
+0                 NaN              NaN   
+1                25.0              NaN   
+2                60.0             25.0   
+3                 NaN              NaN   
+
+                                               notes  
+0                                                     
+1                                                     
+2  Manual mixing with higher dewar pressure and m...  
+3                                                     
