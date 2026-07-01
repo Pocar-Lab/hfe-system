@@ -67,7 +67,7 @@
     { column: 'rsv_scale_raw_counts', key: 'raw_counts', digits: 0 },
     { column: 'rsv_scale_calibrated', key: 'calibrated', digits: 0 },
   ];
-  const TEMP_LOG_COLUMNS = ['U0_C', 'U1_C', 'TTEST_C', 'TFO_C', 'TTI_C', 'TNO_C', 'TTO_C', 'TMI_C', 'THM_C', 'THI_C'];
+  const TEMP_LOG_COLUMNS = ['THR_C', 'U1_C', 'TTEST_C', 'TFO_C', 'TTI_C', 'TNO_C', 'TTO_C', 'TMI_C', 'THM_C', 'THI_C'];
   const LOG_HEADER = [
     'time_s',
     ...TEMP_LOG_COLUMNS,
@@ -237,7 +237,7 @@
     { key: 'pressure_tank_bar_abs', tag: 'PTA', label: 'Tank' },
   ];
   const SENSOR_METADATA = [
-    { tag: 'U0', label: 'Unassigned', connected: false },
+    { tag: 'THR', label: 'Heater internal', connected: true },
     { tag: 'U1', label: 'Unassigned', connected: false },
     { tag: 'TTEST', label: 'Test thermocouple', connected: true },
     { tag: 'TFO', label: 'Flow meter outlet', connected: true },

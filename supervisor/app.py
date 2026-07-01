@@ -203,7 +203,7 @@ DETECT_ZERO_AS_NC = True
 
 MAX_LOG_SENSORS = 10
 TEMP_LOG_COLUMNS = [
-    "U0_C",
+    "THR_C",
     "U1_C",
     "TTEST_C",
     "TFO_C",

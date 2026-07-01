@@ -15,7 +15,7 @@ constexpr uint8_t CS_PINS[] = { 9, 3, 23, 31, 39, 47, 30, 38, 46, 48 };
 // Installed probes are T-type everywhere except the HX probes on U8/U9.
 // Leave unused channels on the default K-type unless/until wiring is assigned.
 constexpr max31856_thermocoupletype_t TC_TYPES[] = {
-  MAX31856_TCTYPE_K, // U0 (unused)
+  MAX31856_TCTYPE_K, // U0 / THR
   MAX31856_TCTYPE_K, // U1 (unused)
   MAX31856_TCTYPE_K, // U2 / TTEST
   MAX31856_TCTYPE_T, // U3 / TFO
